@@ -29,7 +29,7 @@ cp .env.example .env   # fill in RPC_URL (and later WALLET_PRIVATE_KEY)
 | 1 | Solana RPC connection | ✅ built, ⚠️ needs your own live RPC to verify | `npm run test:rpc` |
 | 2 | New pool watcher (Pump.fun/Raydium) | ✅ built, ⚠️ account indices need live verification | `npm run test:watcher` |
 | 3 | Token metrics (holders, liquidity, dev %, renounced, wallets/volume) | ✅ built + fully unit-tested offline | `npm run test:metrics` |
-| 4 | Filter engine + PASS/SKIP logging (no buying) | ⏳ | |
+| 4 | Filter engine + PASS/SKIP logging (no buying) | ✅ built + fully unit-tested offline | `npm run test:filters` |
 | 5 | Auto-buy via Jupiter | ⏳ | gated by `trading.enabled` |
 | 6 | Auto-sell TP/SL ladder | ⏳ | gated by `trading.enabled` |
 | 7 | Trade logging (entry/exit/P&L) | ⏳ | |
@@ -111,3 +111,61 @@ real SPL Token `MintLayout`-encoded fixture for the renounce check, and a
 forced-total-RPC-failure case proving `collectTokenMetrics` degrades to
 warnings instead of throwing). This part needed no live network to verify
 its logic - it's pure data transformation once given valid RPC responses.
+
+### Part 4: filter engine + PASS/SKIP logging (still no buying)
+
+**This is the part to read closely before anything else.** It's the whole
+point of the "manually verify the filter logic" non-negotiable.
+
+`src/filters/engine.ts` -> `evaluateFilters(event, metrics, filters)` is a
+pure function: given a token's metrics and your thresholds from
+`config/default.json`, it returns `PASS` or `SKIP` plus **every** failed
+rule's reason (not just the first one). Rules:
+
+| Rule | Config key | 
+|---|---|
+| Liquidity ≥ threshold | `filters.minLiquiditySol` |
+| Top holder % ≤ threshold (pool excluded) | `filters.maxTopHolderPercent` |
+| Dev wallet % ≤ threshold | `filters.maxDevWalletPercent` |
+| Mint authority renounced | `filters.requireMintAuthorityRenounced` |
+| Freeze authority renounced | `filters.requireFreezeAuthorityRenounced` |
+| Unique wallets ≥ threshold | `filters.minUniqueWallets` |
+| Transaction count ≥ threshold | `filters.minTransactionCount` |
+| Unique-wallet / tx ratio ≥ threshold | `filters.minUniqueWalletToTxRatio` |
+
+**A metric the bot couldn't fetch (`null`) always fails its rule** - "we
+don't know" is never treated as "good enough to buy." Thresholds are
+inclusive (`>=` / `<=`), so a value exactly at the limit still PASSes.
+
+`src/filters/decisionLog.ts` prints one line per token to the console and
+appends the full record (including the raw metrics snapshot) to
+`logs/decisions.jsonl`, e.g.:
+
+```
+[PASS] pumpfun MintAddress...  liquidity=10.00SOL topHolder=10.00% devWallet=5.00% renounced=Y/Y wallets=40 txs=60
+[SKIP] pumpfun MintAddress...  liquidity=0.00SOL topHolder=10.00% devWallet=5.00% renounced=Y/Y wallets=40 txs=60
+       reasons: liquidity too low (0.00 SOL < min 5 SOL)
+```
+
+`src/index.ts` now wires Parts 1-4 into a runnable bot: connect -> watch ->
+fetch metrics -> filter -> log. It still never buys anything - even with
+`trading.enabled: true` it only logs a warning that auto-buy isn't wired up
+yet (that's Part 5).
+
+```bash
+npm run test:filters   # the filter-logic unit tests - read these carefully
+npm run build && npm start   # or: npm run dev
+```
+
+27/27 tests pass, 100% offline (`evaluateFilters` is a pure function, no
+network involved at all): baseline PASS, every threshold's exact boundary,
+every rule failing individually with the right reason text, all-unknown-
+metrics failing closed, multiple simultaneous failures all being reported,
+console formatting, and the JSONL decision log round-tripping correctly.
+
+**Before you move past this part**, edit `config/default.json`'s
+`filters` block to your real thresholds, re-run `npm run test:filters`, and
+once you're running the bot live (Part 1/2 need your own RPC), watch
+`logs/decisions.jsonl` against tokens you separately check on Solscan/
+Birdeye/Dexscreener to confirm the PASS/SKIP calls look right to you. That
+manual check is the non-negotiable gate before Part 5 gets turned on.
