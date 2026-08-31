@@ -1,0 +1,117 @@
+# ---------------------------------------------------------------------------
+# OPIUMO sniper bot configuration
+#
+# Every value that affects behavior (filters, position sizing, TP/SL,
+# polling) lives here, NOT in code, so it can be tuned without touching
+# Python. Secrets (RPC URL, private key) stay in .env — never put a key
+# in this file.
+# ---------------------------------------------------------------------------
+
+# "scan"  -> the bot connects, watches for new tokens, pulls their stats,
+#            runs them through the filters below, and logs PASS/SKIP with
+#            a reason. It NEVER places a trade in this mode. This is the
+#            safe default and the mode you should stay in until you have
+#            manually verified filter output against known tokens.
+#
+# "live"  -> in addition to everything "scan" does, tokens that PASS are
+#            auto-bought and managed with the take-profit/stop-loss rules
+#            below. "live" mode ALSO requires the --live CLI flag and the
+#            CONFIRM_LIVE_TRADING=YES env var to actually be honored — see
+#            .env.example. Changing this one line does not, by itself,
+#            enable real trading.
+mode: "scan"
+
+rpc:
+  # ${VAR_NAME} is substituted from the environment / .env at load time.
+  http_url: "${SOLANA_RPC_HTTP_URL}"
+  ws_url: "${SOLANA_RPC_WS_URL}"
+  # processed | confirmed | finalized
+  commitment: "confirmed"
+  # HTTP request timeout, seconds.
+  request_timeout_sec: 15
+
+# Which launch sources to watch for new tokens/pools.
+sources:
+  watch_pumpfun: true
+  watch_raydium: true
+  # Reconnect delay for the log-subscription websocket, seconds.
+  ws_reconnect_delay_sec: 5
+
+# Safety/quality filter thresholds. A token must pass ALL of these to get
+# a PASS verdict. Every rejection is logged with the specific reason(s).
+filters:
+  # Minimum liquidity backing the token (SOL-equivalent). Below this,
+  # slippage on exit is likely to be severe.
+  min_liquidity_sol: 5.0
+
+  # Largest single non-LP holder must own no more than this % of supply.
+  max_top_holder_pct: 15.0
+
+  # The wallet that created the token (dev wallet) must hold no more than
+  # this % of supply.
+  max_dev_holder_pct: 8.0
+
+  # Require mint authority to be null (no one can mint more supply).
+  require_mint_renounced: true
+
+  # Require freeze authority to be null (no one can freeze holder accounts).
+  require_freeze_renounced: true
+
+  # Minimum distinct wallets seen trading the token in the lookback sample.
+  min_unique_wallets: 15
+
+  # unique_wallets / tx_count must be >= this ratio. A low ratio (many
+  # transactions from very few wallets) is a classic wash-trading /
+  # fake-volume signal.
+  min_unique_wallet_ratio: 0.35
+
+  # How many of the most recent transactions on the mint to sample when
+  # computing unique-wallet / volume stats. Larger = more accurate, slower.
+  lookback_tx_count: 100
+
+# Everything below only takes effect in "live" mode (see safety note above).
+trading:
+  # SOL spent per position.
+  position_size_sol: 0.1
+
+  # Max acceptable slippage on Jupiter swaps, in basis points (300 = 3%).
+  slippage_bps: 300
+
+  # Priority fee, in micro-lamports per compute unit. Raise this to land
+  # transactions faster during congestion.
+  priority_fee_microlamports: 200000
+
+  # Never hold more than this many open positions at once.
+  max_concurrent_positions: 3
+
+  # Take-profit ladder: at each price multiplier (vs. entry), sell the
+  # given % of the CURRENT remaining position. Evaluated in order.
+  #   2.0x -> sell 50% of what's left
+  #   4.0x -> sell 80% of what's left (of the remainder after the first sell)
+  take_profit:
+    - multiplier: 2.0
+      sell_pct: 50
+    - multiplier: 4.0
+      sell_pct: 80
+
+  # Full exit if price falls to this % change from entry (negative number).
+  stop_loss_pct: -30.0
+
+  # How often to re-check price for open positions, seconds.
+  price_poll_interval_sec: 5
+
+  # Force a full exit if a position has been open this long with no TP/SL
+  # trigger, in minutes. 0 disables the timeout.
+  position_timeout_min: 60
+
+jupiter:
+  quote_url: "https://quote-api.jup.ag/v6/quote"
+  swap_url: "https://quote-api.jup.ag/v6/swap"
+  input_mint_sol: "So11111111111111111111111111111111111111112"
+
+storage:
+  db_path: "data/trades.db"
+
+logging:
+  log_dir: "logs"
+  level: "INFO"
