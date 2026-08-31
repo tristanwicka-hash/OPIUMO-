@@ -1,0 +1,32 @@
+{
+  "name": "opiumo-sniper-bot",
+  "version": "0.1.0",
+  "description": "Solana new-token sniper/filter bot: watches Pump.fun/Raydium for new pools, scores them against configurable filters, and (once enabled) auto-trades via Jupiter.",
+  "private": true,
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "test": "ts-node tests/run-all.ts",
+    "test:rpc": "ts-node tests/test-rpc-connection.ts",
+    "test:watcher": "ts-node tests/test-watcher.ts",
+    "test:metrics": "ts-node tests/test-token-metrics.ts",
+    "test:filters": "ts-node tests/test-filters.ts",
+    "test:trading": "ts-node tests/test-trading.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@solana/spl-token": "^0.4.9",
+    "@solana/web3.js": "^1.95.4",
+    "dotenv": "^16.4.5",
+    "node-fetch": "^2.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.15",
+    "@types/node-fetch": "^2.6.11",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.4"
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "_comment": "All tunables live here so you never have to touch source code. Edit, save, restart the bot.",
+
+  "trading": {
+    "_comment": "Master switch. MUST be flipped to true by hand once you have verified the filter logic yourself. See NON-NEGOTIABLES in README.md.",
+    "enabled": false,
+    "positionSizeSol": 0.1,
+    "maxSlippageBps": 100,
+    "takeProfitLadder": [
+      { "atMultipleOfEntry": 2, "sellPercentOfRemaining": 50 },
+      { "atMultipleOfEntry": 4, "sellPercentOfRemaining": 80 }
+    ],
+    "stopLossPercent": -30,
+    "priceCheckIntervalMs": 5000
+  },
+
+  "filters": {
+    "_comment": "A token must satisfy ALL of these to PASS. Any failed rule => SKIP with a reason.",
+    "minLiquiditySol": 5,
+    "maxTopHolderPercent": 20,
+    "maxDevWalletPercent": 10,
+    "requireMintAuthorityRenounced": true,
+    "requireFreezeAuthorityRenounced": true,
+    "minUniqueWallets": 20,
+    "minTransactionCount": 30,
+    "minUniqueWalletToTxRatio": 0.15
+  },
+
+  "sources": {
+    "watchPumpFun": true,
+    "watchRaydium": true
+  },
+
+  "polling": {
+    "metricsMaxAgeMs": 4000,
+    "metricsFetchTimeoutMs": 8000
+  },
+
+  "logging": {
+    "level": "info",
+    "logDir": "logs",
+    "decisionsFile": "logs/decisions.jsonl",
+    "tradesFile": "logs/trades.jsonl"
+  }
+}
