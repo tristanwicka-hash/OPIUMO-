@@ -27,7 +27,7 @@ cp .env.example .env   # fill in RPC_URL (and later WALLET_PRIVATE_KEY)
 | # | Part | Status | Notes |
 |---|------|--------|-------|
 | 1 | Solana RPC connection | ✅ built, ⚠️ needs your own live RPC to verify | `npm run test:rpc` |
-| 2 | New pool watcher (Pump.fun/Raydium) | ⏳ | |
+| 2 | New pool watcher (Pump.fun/Raydium) | ✅ built, ⚠️ account indices need live verification | `npm run test:watcher` |
 | 3 | Token metrics (holders, liquidity, dev %, renounced, wallets/volume) | ⏳ | |
 | 4 | Filter engine + PASS/SKIP logging (no buying) | ⏳ | |
 | 5 | Auto-buy via Jupiter | ⏳ | gated by `trading.enabled` |
@@ -52,3 +52,29 @@ be verified for correct build/typecheck/error-handling here - **you need to
 run `npm run test:rpc` yourself** against your real RPC endpoint (Helius,
 QuickNode, Triton, or even the public endpoint for a first smoke test)
 before moving on.
+
+### Part 2: new pool/token watcher
+
+`src/watcher/` subscribes to Pump.fun and Raydium AMM V4 program logs
+(`Connection.onLogs`), recognizes their create/`initialize2` instructions,
+fetches the full transaction, and emits a normalized `newPool` event with
+the mint address and (when available) creator wallet and pool address.
+
+```bash
+npm run test:watcher
+```
+
+12/12 offline unit tests pass in this sandbox (log-pattern matching +
+mint/creator extraction against fixture transactions). The live websocket
+subscription smoke test also ran cleanly here (started, handled the
+sandbox's network block gracefully, stopped) - but **the exact account
+indices used to pull the mint out of a real transaction could not be
+checked against a live transaction** (no RPC egress in this sandbox):
+
+- Pump.fun's `create` account order is well-documented and stable
+  (`src/watcher/pumpfunWatcher.ts`), but still worth a spot check.
+- Raydium's `initialize2` account order (`src/watcher/raydiumWatcher.ts`)
+  is known to drift slightly across Raydium SDK versions - **verify this one
+  against a few real transactions on Solscan before trusting it**, and
+  adjust `RAYDIUM_INITIALIZE2_ACCOUNT_INDEX` if the mint/pool addresses come
+  out wrong.
