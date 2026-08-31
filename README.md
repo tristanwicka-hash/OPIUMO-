@@ -28,7 +28,7 @@ cp .env.example .env   # fill in RPC_URL (and later WALLET_PRIVATE_KEY)
 |---|------|--------|-------|
 | 1 | Solana RPC connection | ✅ built, ⚠️ needs your own live RPC to verify | `npm run test:rpc` |
 | 2 | New pool watcher (Pump.fun/Raydium) | ✅ built, ⚠️ account indices need live verification | `npm run test:watcher` |
-| 3 | Token metrics (holders, liquidity, dev %, renounced, wallets/volume) | ⏳ | |
+| 3 | Token metrics (holders, liquidity, dev %, renounced, wallets/volume) | ✅ built + fully unit-tested offline | `npm run test:metrics` |
 | 4 | Filter engine + PASS/SKIP logging (no buying) | ⏳ | |
 | 5 | Auto-buy via Jupiter | ⏳ | gated by `trading.enabled` |
 | 6 | Auto-sell TP/SL ladder | ⏳ | gated by `trading.enabled` |
@@ -78,3 +78,36 @@ checked against a live transaction** (no RPC egress in this sandbox):
   against a few real transactions on Solscan before trusting it**, and
   adjust `RAYDIUM_INITIALIZE2_ACCOUNT_INDEX` if the mint/pool addresses come
   out wrong.
+
+### Part 3: token metrics
+
+`src/data/tokenMetrics.ts` takes a `NewPoolEvent` from Part 2 and gathers
+everything Part 4's filters need:
+
+- **mint/freeze authority renounced** - `getMint` (SPL Token), authority `=== null`
+- **top holder %** - `getTokenLargestAccounts`, with the pool/vault addresses
+  excluded (otherwise the pool itself, which legitimately holds most of the
+  pre-migration supply, always looks like "one whale owns 80%")
+- **dev wallet %** - the token creator's own balance (from Part 2's `creator`
+  field) as a % of supply
+- **liquidity (SOL)** - Pump.fun: the bonding curve PDA's native SOL balance.
+  Raydium: whichever vault is the WSOL side of the pool
+- **unique wallets vs tx volume** - samples up to
+  `polling.walletActivitySampleSize` (default 100) recent signatures against
+  the pool address and counts distinct fee payers vs total tx count
+
+A metric that fails to fetch is recorded as a `null` value + an entry in
+`warnings`, not a crash - one flaky RPC call shouldn't throw away an
+otherwise-complete picture. `collectTokenMetrics()` **fails closed** on
+error for the renounce checks (defaults to "not renounced" if it can't
+verify), so a partial outage never accidentally lets a risky token through.
+
+```bash
+npm run test:metrics
+```
+
+13/13 tests pass, all offline against a mocked `Connection` (including a
+real SPL Token `MintLayout`-encoded fixture for the renounce check, and a
+forced-total-RPC-failure case proving `collectTokenMetrics` degrades to
+warnings instead of throwing). This part needed no live network to verify
+its logic - it's pure data transformation once given valid RPC responses.

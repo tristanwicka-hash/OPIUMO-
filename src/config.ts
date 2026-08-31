@@ -44,6 +44,7 @@ export interface SourcesConfig {
 export interface PollingConfig {
   metricsMaxAgeMs: number;
   metricsFetchTimeoutMs: number;
+  walletActivitySampleSize: number;
 }
 
 export interface LoggingConfig {

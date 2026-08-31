@@ -49,11 +49,16 @@ export function extractPumpFunNewPool(
     const userPk = accounts[PUMPFUN_CREATE_ACCOUNT_INDEX.user];
     if (!mintPk) continue;
 
+    const bondingCurvePk = accounts[PUMPFUN_CREATE_ACCOUNT_INDEX.bondingCurve];
+
     return {
       source: "pumpfun",
       signature,
       slot,
       mint: mintPk.toBase58(),
+      // The bonding curve PDA holds the pool's native SOL balance directly -
+      // that IS the liquidity for a pre-migration Pump.fun token.
+      poolAddress: bondingCurvePk?.toBase58(),
       creator: userPk?.toBase58(),
       detectedAt: new Date().toISOString(),
     };

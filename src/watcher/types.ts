@@ -11,5 +11,11 @@ export interface NewPoolEvent {
   poolAddress?: string;
   /** Wallet that created the token/pool, when we can identify it from the tx. */
   creator?: string;
+  /** Raydium-only: the pool's SPL token vault for the base ("coin") mint. */
+  raydiumCoinVault?: string;
+  /** Raydium-only: the pool's SPL token vault for the quote ("pc") mint. */
+  raydiumPcVault?: string;
+  /** Raydium-only: the quote-side mint (often WSOL, sometimes USDC). */
+  raydiumPcMint?: string;
   detectedAt: string;
 }

@@ -20,6 +20,8 @@ export const RAYDIUM_INITIALIZE2_ACCOUNT_INDEX = {
   lpMint: 7,
   coinMint: 8,
   pcMint: 9,
+  poolCoinTokenAccount: 10,
+  poolPcTokenAccount: 11,
   userWallet: 17,
 };
 
@@ -56,7 +58,10 @@ export function extractRaydiumNewPool(
     const idx = RAYDIUM_INITIALIZE2_ACCOUNT_INDEX;
     const ammIdPk = accounts[idx.ammId];
     const coinMintPk = accounts[idx.coinMint];
+    const pcMintPk = accounts[idx.pcMint];
     const userWalletPk = accounts[idx.userWallet];
+    const coinVaultPk = accounts[idx.poolCoinTokenAccount];
+    const pcVaultPk = accounts[idx.poolPcTokenAccount];
     if (!ammIdPk || !coinMintPk) continue;
 
     return {
@@ -66,6 +71,9 @@ export function extractRaydiumNewPool(
       mint: coinMintPk.toBase58(),
       poolAddress: ammIdPk.toBase58(),
       creator: userWalletPk?.toBase58(),
+      raydiumCoinVault: coinVaultPk?.toBase58(),
+      raydiumPcVault: pcVaultPk?.toBase58(),
+      raydiumPcMint: pcMintPk?.toBase58(),
       detectedAt: new Date().toISOString(),
     };
   }

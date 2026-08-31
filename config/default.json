@@ -33,7 +33,8 @@
 
   "polling": {
     "metricsMaxAgeMs": 4000,
-    "metricsFetchTimeoutMs": 8000
+    "metricsFetchTimeoutMs": 8000,
+    "walletActivitySampleSize": 100
   },
 
   "logging": {
