@@ -98,7 +98,12 @@ design, not a rushed addition:
 - **The Raydium `initialize2` account indices are still unverified against
   a real transaction** - flagged since the very first hardening pass, still
   needs your own RPC access to confirm, still not something fixable from
-  this sandbox.
+  this sandbox. To make that check as low-effort as possible:
+  `npm run verify:raydium-tx -- <signature>` (`scripts/verify-raydium-tx.ts`)
+  decodes one real `initialize2` transaction and prints its account list
+  next to what this bot currently assumes each index means - grab a
+  signature from Solscan, run the one command, compare against what
+  Solscan's own page shows for that tx. That's the whole check.
 
 ## Status
 

@@ -11,6 +11,7 @@
     "dev": "ts-node src/index.ts",
     "perps": "ts-node src/perpsIndex.ts",
     "start:perps": "node dist/src/perpsIndex.js",
+    "verify:raydium-tx": "ts-node scripts/verify-raydium-tx.ts",
     "test": "ts-node tests/run-all.ts",
     "test:rpc": "ts-node tests/test-rpc-connection.ts",
     "test:watcher": "ts-node tests/test-watcher.ts",
