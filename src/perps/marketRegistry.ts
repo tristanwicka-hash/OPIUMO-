@@ -23,3 +23,10 @@ export function listAvailableMarkets(env: DriftEnv): string[] {
   const config = initialize({ env });
   return config.PERP_MARKETS.map((m) => m.symbol);
 }
+
+/** Same idea as resolveMarketIndex, but for Drift's spot markets (e.g. "SOL", "USDC"). */
+export function resolveSpotMarketIndex(env: DriftEnv, symbol: string): number | null {
+  const config = initialize({ env });
+  const market = config.SPOT_MARKETS.find((m) => m.symbol.toUpperCase() === symbol.toUpperCase());
+  return market ? market.marketIndex : null;
+}

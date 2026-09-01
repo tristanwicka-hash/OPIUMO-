@@ -73,6 +73,24 @@ export interface PerpsConfig {
   orderTimeoutMs: number;
 }
 
+export interface FundingArbConfig {
+  /** Separate from perps.enabled - BOTH must be true for this strategy to place a single order. */
+  enabled: boolean;
+  market: string;
+  spotMarket: string;
+  checkIntervalMinutes: number;
+  minFundingRateHourlyPercent: number;
+  minConsecutiveSettlementsToEnter: number;
+  minConsecutiveSettlementsToExit: number;
+  maxBasisPercent: number;
+  rebalanceDriftPercent: number;
+  maxLeverage: number;
+  notionalUsd: number;
+  estimatedRoundTripCostBps: number;
+  minMarginBufferPercent: number;
+  historyFile: string;
+}
+
 export interface AppConfig {
   trading: TradingConfig;
   filters: FiltersConfig;
@@ -80,6 +98,7 @@ export interface AppConfig {
   polling: PollingConfig;
   logging: LoggingConfig;
   perps: PerpsConfig;
+  fundingArb: FundingArbConfig;
   rpcUrl: string;
   wsUrl?: string;
   walletPrivateKey?: string;
@@ -138,6 +157,27 @@ function validate(config: AppConfig): void {
       "\n*** WARNING: perps.enabled=true AND perps.env=mainnet-beta - this bot will place REAL leveraged " +
         "orders with REAL money on your next perps order. If that isn't deliberate, stop and fix config/default.json now. ***\n"
     );
+  }
+
+  if (config.fundingArb.enabled && !config.perps.enabled) {
+    errors.push("fundingArb.enabled is true but perps.enabled is false - the strategy can decide to trade, but the order gate underneath it will refuse everything. Enable both deliberately, or neither.");
+  }
+  if (config.fundingArb.enabled && !config.perps.allowedMarkets.some((m) => m.toUpperCase() === config.fundingArb.market.toUpperCase())) {
+    errors.push(`fundingArb.market ("${config.fundingArb.market}") must also be listed in perps.allowedMarkets`);
+  }
+  if (config.fundingArb.maxLeverage > config.perps.maxLeverage) {
+    errors.push(`fundingArb.maxLeverage (${config.fundingArb.maxLeverage}) must be <= perps.maxLeverage (${config.perps.maxLeverage})`);
+  }
+  if (config.fundingArb.notionalUsd > config.perps.maxPositionSizeUsd) {
+    errors.push(`fundingArb.notionalUsd (${config.fundingArb.notionalUsd}) must be <= perps.maxPositionSizeUsd (${config.perps.maxPositionSizeUsd})`);
+  }
+  if (config.fundingArb.checkIntervalMinutes <= 0) errors.push("fundingArb.checkIntervalMinutes must be > 0");
+  if (config.fundingArb.minConsecutiveSettlementsToEnter <= 0) errors.push("fundingArb.minConsecutiveSettlementsToEnter must be > 0");
+  if (config.fundingArb.minConsecutiveSettlementsToExit <= 0) errors.push("fundingArb.minConsecutiveSettlementsToExit must be > 0");
+  if (config.fundingArb.maxBasisPercent <= 0) errors.push("fundingArb.maxBasisPercent must be > 0");
+  if (config.fundingArb.rebalanceDriftPercent <= 0) errors.push("fundingArb.rebalanceDriftPercent must be > 0");
+  if (config.fundingArb.minMarginBufferPercent <= 0 || config.fundingArb.minMarginBufferPercent >= 100) {
+    errors.push("fundingArb.minMarginBufferPercent must be between 0 and 100");
   }
 
   if (errors.length > 0) {

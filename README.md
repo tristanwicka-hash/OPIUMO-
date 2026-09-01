@@ -76,6 +76,7 @@ up yourself once archived. Covered by `npm run test:logger` (5/5 pass).
 | 6 | Auto-sell TP/SL ladder | ⏳ | gated by `trading.enabled` |
 | 7 | Trade logging (entry/exit/P&L) | ⏳ | |
 | 8 | **Perps trading (Drift Protocol)** - plumbing only, no strategy | ✅ built + risk engine fully unit-tested offline | `npm run test:perps-risk`, `npm run test:perps-connection` |
+| 9 | **Funding Rate Arbitrage strategy** (Drift) - the first real strategy on top of Part 8's plumbing | ✅ built + signal logic fully unit-tested offline | `npm run test:funding-arb-signals`, `npm run test:funding-arb-live` |
 
 Each part has its own `npm run test:<part>` script - run it and read the
 console output before trusting that part.
@@ -153,6 +154,73 @@ built: a live price-monitoring loop to react to a stop-loss/take-profit
 actually filling (the trigger orders are placed on-chain and Drift itself
 executes them - you don't need a bot running for that part - but nothing
 here watches for the fill and logs the close automatically yet).
+
+### Part 9: Funding Rate Arbitrage strategy (Drift)
+
+The first actual entry/exit strategy, built on top of Part 8's plumbing per
+your spec: **long spot + short perp, equal notional, farming a persistently
+positive funding rate.** Same non-negotiables as everywhere else - separate
+`fundingArb.enabled` flag (in addition to `perps.enabled` underneath it),
+both default `false`; `perps.env` still defaults `devnet`.
+
+**Two scope decisions worth knowing before you read the code:**
+
+1. **This strategy does not buy your spot leg.** "Long spot equivalent" in
+   your spec assumes you already hold (or have deposited into Drift as
+   collateral) the base asset - `getSpotNotionalUsd()` *reads* your existing
+   Drift spot balance, it never acquires one. If you have no spot position,
+   `considerEntry()` blocks with `"no spot leg detected"` rather than
+   quietly shorting naked. Building an auto-acquire-spot step would mean
+   either a Jupiter spot swap (not built - that was the still-pending Part
+   5) or a Drift spot deposit call - a reasonable next addition, just not
+   assumed for you.
+2. **Every order this strategy places still carries a stop-loss** (required
+   by `perps.requireStopLoss`, reused as-is per your "reuse existing risk
+   gates" instruction) - but it is a wide, last-resort **disaster backstop**
+   (`perps.defaultStopLossPercent`, -10% by default), not the strategy's
+   real exit mechanism. A delta-neutral position doesn't have a natural
+   price-based stop - the actual protections are the basis/funding-flip
+   exits and the margin-buffer emergency unwind below. The backstop exists
+   purely so that if this bot process dies while a position is open, Drift
+   still has a resting order that fires on a truly disastrous move instead
+   of an unmonitored naked short forever. No take-profit is set on these
+   orders - profit here comes from funding accrual over time, not price
+   movement, so a price target would fight the hedge.
+
+What's built, mapped to your spec:
+
+| Your spec | Implementation |
+|---|---|
+| Monitor funding rate every [X min] | `fundingArb.checkIntervalMinutes` (default 5) drives `FundingArbStrategy.start()`'s timer |
+| Enter after [N] consecutive settlements above threshold, not a spike | `signals.shouldEnter()` - checks the *last N* recorded settlements, one bad one anywhere in that window blocks entry |
+| Long spot + short perp, equal notional | perp leg sized to `min(fundingArb.notionalUsd, your live spot balance)` |
+| Leverage 1-3x max | `fundingArb.maxLeverage` (default 2, validated `<= perps.maxLeverage`), enforced by the same risk gate as Part 8 |
+| Exit if funding flips negative for [N] settlements | `signals.shouldExitOnFundingFlip()` |
+| Exit if basis widens beyond [X%] | `signals.shouldExitOnBasis()` |
+| Rebalance if legs drift beyond [X%] | `signals.shouldRebalance()` - currently rebalances by **closing and reopening** at the corrected size (pays fees twice; a true partial-resize order is a reasonable future refinement, not built now) |
+| Hard cap on leverage | reused from Part 8's `perps.maxLeverage` / risk gate |
+| Margin buffer above maintenance floor | `signals.hasSufficientMarginBuffer()`, checked every cycle - a breach while a position is open triggers an immediate emergency unwind, independent of every other signal |
+| Fee/slippage check before entry | `signals.passesCostGate()` - rejects entry if projected funding income over the entry-confirmation window doesn't clear `fundingArb.estimatedRoundTripCostBps` |
+
+One correction from your spec worth flagging: **Drift settles funding
+roughly hourly, not the 8hr cadence common on centralized exchanges** (read
+live per-market via `amm.fundingPeriod`, not assumed). All the
+`minFundingRateHourlyPercent`/settlement-count thresholds are expressed
+against Drift's real cadence rather than the CEX-style 8hr unit from the
+spec's example.
+
+`FundingHistoryStore` persists the rolling settlement history to
+`logs/funding-arb-history.json` (one real on-chain settlement per entry,
+deduped against repeated polls via `amm.lastFundingRateTs`) so "N
+consecutive settlements" survives a bot restart. Current phase (flat vs.
+holding a position) is **not** separately persisted - `checkOnce()` derives
+it fresh from Drift's own live position data every cycle, so it can never
+drift out of sync with what's actually on-chain.
+
+```bash
+npm run test:funding-arb-signals  # 35/35 offline - read this before enabling anything
+npm run test:funding-arb-live     # needs your own RPC + wallet; runs ONE real evaluation cycle, no order unless signals say to AND both enabled flags are true
+```
 
 ### Part 1: RPC connection
 

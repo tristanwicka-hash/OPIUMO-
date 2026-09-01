@@ -16,6 +16,8 @@ const suites = [
   { name: "Log rotation (util)", script: "tests/test-logger.ts" },
   { name: "Perps risk engine (offline)", script: "tests/test-perps-risk.ts" },
   { name: "Perps Drift connection (live)", script: "tests/test-perps-connection.ts" },
+  { name: "Funding-arb signals (offline)", script: "tests/test-funding-arb-signals.ts" },
+  { name: "Funding-arb live cycle", script: "tests/test-funding-arb-live.ts" },
 ];
 
 let anyFailed = false;

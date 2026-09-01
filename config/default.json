@@ -59,5 +59,23 @@
     "defaultStopLossPercent": -10,
     "defaultTakeProfitPercent": 20,
     "orderTimeoutMs": 15000
+  },
+
+  "fundingArb": {
+    "_comment": "Funding Rate Arbitrage strategy: long spot (assumed already held, or deposited as Drift spot collateral yourself - this bot does NOT buy the spot leg for you, see README) + short perp, equal notional, farming the funding rate. Reuses perps.* risk gate - maxLeverage below must be <= perps.maxLeverage, and market must be in perps.allowedMarkets. NOTE: Drift settles funding roughly hourly, not the 8hr cadence common on centralized exchanges - thresholds below are expressed per-hour to match Drift's actual cadence (read live from each market, not hardcoded).",
+    "enabled": false,
+    "market": "SOL-PERP",
+    "spotMarket": "SOL",
+    "checkIntervalMinutes": 5,
+    "minFundingRateHourlyPercent": 0.01,
+    "minConsecutiveSettlementsToEnter": 3,
+    "minConsecutiveSettlementsToExit": 3,
+    "maxBasisPercent": 1.0,
+    "rebalanceDriftPercent": 5,
+    "maxLeverage": 2,
+    "notionalUsd": 100,
+    "estimatedRoundTripCostBps": 10,
+    "minMarginBufferPercent": 20,
+    "historyFile": "logs/funding-arb-history.json"
   }
 }

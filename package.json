@@ -17,6 +17,8 @@
     "test:logger": "ts-node tests/test-logger.ts",
     "test:perps-risk": "ts-node tests/test-perps-risk.ts",
     "test:perps-connection": "ts-node tests/test-perps-connection.ts",
+    "test:funding-arb-signals": "ts-node tests/test-funding-arb-signals.ts",
+    "test:funding-arb-live": "ts-node tests/test-funding-arb-live.ts",
     "test:trading": "ts-node tests/test-trading.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
