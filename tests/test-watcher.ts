@@ -3,11 +3,14 @@
  *
  * Run with: npm run test:watcher
  *
- * Two kinds of checks here:
+ * Three kinds of checks here:
  *  1. Offline, deterministic unit tests of the log-matching + mint-extraction
  *     logic against realistic fixture data - these do NOT need network and
  *     fully pass/fail in this sandbox.
- *  2. A live subscription smoke test (PoolWatcher.start()) - this needs a
+ *  2. Offline unit tests of PoolWatcher's own reliability behavior (signature
+ *     dedup, self-healing reconnect) against a mock Connection - also fully
+ *     offline/deterministic.
+ *  3. A live subscription smoke test (PoolWatcher.start()) - this needs a
  *     websocket connection to your RPC provider. In this sandbox it will
  *     fail with a network error, same as Part 1's RPC test; expected here,
  *     re-run on a machine with real RPC access before trusting Part 2.
@@ -29,8 +32,21 @@ import {
   extractRaydiumNewPool,
   RAYDIUM_INITIALIZE2_ACCOUNT_INDEX,
 } from "../src/watcher/raydiumWatcher";
-import { PoolWatcher } from "../src/watcher";
+import { PoolWatcher, PoolWatcherOptions } from "../src/watcher";
 import { getConnection } from "../src/rpc/connection";
+
+/** Mock Connection exposing only what PoolWatcher itself calls (no metrics/filter methods needed here). */
+function mockWatcherConnection(overrides: Partial<Record<string, (...args: any[]) => any>> = {}) {
+  let nextId = 1;
+  const base: Record<string, (...args: any[]) => any> = {
+    onLogs: () => nextId++,
+    removeOnLogsListener: async () => {},
+    onSlotChange: () => nextId++,
+    removeSlotChangeListener: async () => {},
+    getParsedTransaction: async () => null,
+  };
+  return { ...base, ...overrides } as any;
+}
 
 let pass = 0;
 let fail = 0;
@@ -124,6 +140,81 @@ async function main() {
     const tx = fixtureParsedTx(Keypair.generate().publicKey, accounts);
     check("extractPumpFunNewPool returns null for an unrelated program", extractPumpFunNewPool("sig3", 3, tx) === null);
     check("extractRaydiumNewPool returns null for an unrelated program", extractRaydiumNewPool("sig4", 4, tx) === null);
+  }
+
+  console.log("\n-- signature dedup (a redelivered/duplicated log must not double-process) --");
+  {
+    const accounts = fixtureAccounts(14);
+    const tx = fixtureParsedTx(PUMPFUN_PROGRAM_ID, accounts);
+    let getParsedTransactionCalls = 0;
+    const conn = mockWatcherConnection({
+      getParsedTransaction: async () => {
+        getParsedTransactionCalls++;
+        return tx;
+      },
+    });
+    const watcher = new PoolWatcher(conn);
+    let emitCount = 0;
+    watcher.on("newPool", () => emitCount++);
+
+    const logsResult = { err: null, logs: [PUMPFUN_CREATE_LOG_MARKER], signature: "duplicate-sig" };
+    await (watcher as any).handlePumpFunLogs(logsResult);
+    await (watcher as any).handlePumpFunLogs(logsResult); // same signature delivered again
+
+    check("duplicate signature only emits newPool once", emitCount === 1);
+    check("duplicate signature only resolves the transaction once (saves an RPC call)", getParsedTransactionCalls === 1);
+  }
+
+  console.log("\n-- self-healing: a silently-dead websocket triggers automatic resubscribe --");
+  {
+    let onLogsCalls = 0;
+    const conn = mockWatcherConnection({
+      onLogs: () => {
+        onLogsCalls++;
+        return onLogsCalls;
+      },
+    });
+    const options: PoolWatcherOptions = { staleConnectionThresholdMs: 10, healthCheckIntervalMs: 60_000 };
+    const watcher = new PoolWatcher(conn, options);
+
+    watcher.start();
+    const callsAfterStart = onLogsCalls;
+    check("start() subscribes to pumpfun + raydium logs", callsAfterStart === 2);
+
+    // Simulate total silence: no onSlotChange callback ever fires, so lastSlotSeenAt
+    // never advances past start(). Wait past the (tiny, test-only) staleness threshold,
+    // then trigger the health check manually instead of waiting on the real interval.
+    await new Promise((r) => setTimeout(r, 25));
+    watcher.checkHealth();
+    await new Promise((r) => setTimeout(r, 25)); // restart() runs stop().then(start()) asynchronously
+
+    check("a stale connection triggers an automatic resubscribe", onLogsCalls > callsAfterStart);
+    await watcher.stop();
+  }
+  {
+    // The inverse: healthy connections (slot updates arriving) must NOT be restarted.
+    let onLogsCalls = 0;
+    let onSlotChangeCallback: () => void = () => {};
+    const conn = mockWatcherConnection({
+      onLogs: () => {
+        onLogsCalls++;
+        return onLogsCalls;
+      },
+      onSlotChange: (cb: () => void) => {
+        onSlotChangeCallback = cb;
+        return 1;
+      },
+    });
+    const watcher = new PoolWatcher(conn, { staleConnectionThresholdMs: 10_000, healthCheckIntervalMs: 60_000 });
+    watcher.start();
+    const callsAfterStart = onLogsCalls;
+
+    onSlotChangeCallback(); // simulate a heartbeat right before the health check
+    watcher.checkHealth();
+    await new Promise((r) => setTimeout(r, 10));
+
+    check("a healthy (recently-seen-slot) connection is left alone", onLogsCalls === callsAfterStart);
+    await watcher.stop();
   }
 
   console.log(`\nOffline checks: ${pass} passed, ${fail} failed`);

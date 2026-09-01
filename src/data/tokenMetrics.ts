@@ -1,6 +1,6 @@
 import { Connection, PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
-import { getMint } from "@solana/spl-token";
-import { loadConfig } from "../config";
+import { unpackMint, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
+import { loadConfig, PollingConfig } from "../config";
 import { Logger } from "../util/logger";
 import { NewPoolEvent } from "../watcher/types";
 
@@ -12,7 +12,7 @@ export interface TokenMetrics {
   mint: string;
   fetchedAt: string;
 
-  /** null when we could not determine it (e.g. no known pool/vault). */
+  /** null when we could not determine it (e.g. no known pool/vault, or the RPC call failed). */
   liquiditySol: number | null;
 
   /** % of circulating supply held by the single largest non-pool holder. */
@@ -21,19 +21,48 @@ export interface TokenMetrics {
   /** % of circulating supply held by the wallet that created the token. */
   devWalletPercent: number | null;
 
-  mintAuthorityRenounced: boolean;
-  freezeAuthorityRenounced: boolean;
+  /** null means "couldn't verify" - NOT the same as false ("confirmed not renounced"). */
+  mintAuthorityRenounced: boolean | null;
+  freezeAuthorityRenounced: boolean | null;
 
   uniqueWallets: number | null;
   transactionCount: number | null;
 
-  /** Any partial failures, so the filter engine can decide how to treat them. */
+  /** True if collecting these metrics took longer than polling.metricsMaxAgeMs - treat with suspicion, the token's on-chain state may have moved since. */
+  stale: boolean;
+
+  /** Any partial failures, so the filter engine can decide how to treat them - always check this before trusting a PASS. */
   warnings: string[];
 }
 
-/** Mint authority / freeze authority state - this is what "renounced" means for an SPL token. */
+/** Races a promise against a timeout so one slow RPC call can't hang metrics collection forever. */
+export function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  // Deliberately NOT unref()'d: an unref'd timer can be skipped entirely by Node's event
+  // loop if it ends up the only pending handle (e.g. a standalone script, or a test),
+  // which would make a hung RPC call hang forever instead of timing out - defeating the
+  // whole point of this wrapper. A few seconds of delayed process exit is a much smaller
+  // cost than a timeout that can silently never fire.
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    }),
+  ]);
+}
+
+/**
+ * Mint authority / freeze authority state - this is what "renounced" means for an SPL token.
+ * Detects whether the mint belongs to the classic Token Program or Token-2022 and decodes
+ * accordingly (a plain getMint() call defaults to the classic program and throws on Token-2022
+ * mints, which would otherwise look identical to a fetch failure).
+ */
 export async function getRenounceStatus(connection: Connection, mint: PublicKey) {
-  const info = await getMint(connection, mint);
+  const accountInfo = await connection.getAccountInfo(mint);
+  if (!accountInfo) {
+    throw new Error("mint account not found");
+  }
+  const programId = accountInfo.owner.equals(TOKEN_2022_PROGRAM_ID) ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+  const info = unpackMint(mint, accountInfo, programId);
   return {
     mintAuthorityRenounced: info.mintAuthority === null,
     freezeAuthorityRenounced: info.freezeAuthority === null,
@@ -84,7 +113,11 @@ export async function getWalletMintPercent(
   return Number((ownedRaw * 10000n) / supplyRaw) / 100;
 }
 
-/** Pump.fun pre-migration liquidity: the bonding curve PDA's native SOL balance. */
+/** Pump.fun pre-migration liquidity: the bonding curve PDA's native SOL balance.
+ *  NOTE: this is the *real* SOL actually deposited by buyers so far - Pump.fun's bonding
+ *  curve math also uses a fixed *virtual* SOL reserve (never held in this account) as part
+ *  of its price curve, so this number will read lower than the "liquidity"/market-cap figure
+ *  shown in Pump.fun's own UI. Treat minLiquiditySol as "real SOL raised", not "displayed mcap". */
 export async function getPumpFunLiquiditySol(
   connection: Connection,
   bondingCurve: PublicKey
@@ -160,42 +193,57 @@ export async function getWalletActivity(
  * every metric Part 4's filters need. Individual metric failures are
  * captured as warnings rather than throwing, so one flaky RPC call doesn't
  * discard an otherwise-complete picture - the filter engine decides how to
- * treat a missing metric (see Part 4).
+ * treat a missing metric (see Part 4). Every RPC call is bounded by
+ * polling.metricsFetchTimeoutMs, and the whole collection is timed against
+ * polling.metricsMaxAgeMs to flag results that took so long they might be
+ * stale by the time you act on them.
+ *
+ * `pollingOverrides` lets callers (mainly tests) override the timeout/
+ * staleness thresholds without touching global config.
  */
 export async function collectTokenMetrics(
   connection: Connection,
-  event: NewPoolEvent
+  event: NewPoolEvent,
+  pollingOverrides?: Partial<PollingConfig>
 ): Promise<TokenMetrics> {
   const config = loadConfig();
+  const polling = { ...config.polling, ...pollingOverrides };
   const warnings: string[] = [];
   const mint = new PublicKey(event.mint);
+  const startedAt = Date.now();
+  const timeout = <T>(p: Promise<T>, label: string) => withTimeout(p, polling.metricsFetchTimeoutMs, label);
 
-  let mintAuthorityRenounced = false;
-  let freezeAuthorityRenounced = false;
+  let mintAuthorityRenounced: boolean | null = null;
+  let freezeAuthorityRenounced: boolean | null = null;
   let supplyRaw = 0n;
   try {
-    const renounce = await getRenounceStatus(connection, mint);
+    const renounce = await timeout(getRenounceStatus(connection, mint), "renounce status");
     mintAuthorityRenounced = renounce.mintAuthorityRenounced;
     freezeAuthorityRenounced = renounce.freezeAuthorityRenounced;
     supplyRaw = renounce.supplyRaw;
   } catch (err: any) {
     warnings.push(`renounce status: ${err?.message || err}`);
+    // mintAuthorityRenounced/freezeAuthorityRenounced stay null ("unknown"), NOT false
+    // ("confirmed not renounced") - the filter engine tells those two states apart.
   }
 
   let liquiditySol: number | null = null;
   try {
     if (event.source === "pumpfun" && event.poolAddress) {
-      liquiditySol = await getPumpFunLiquiditySol(connection, new PublicKey(event.poolAddress));
+      liquiditySol = await timeout(getPumpFunLiquiditySol(connection, new PublicKey(event.poolAddress)), "pumpfun liquidity");
     } else if (event.source === "raydium") {
       if (!event.raydiumPcMint) {
         warnings.push("no pcMint captured - cannot determine which vault is the SOL side");
       } else {
-        liquiditySol = await getRaydiumLiquiditySol(
-          connection,
-          event.mint,
-          event.raydiumPcMint,
-          event.raydiumCoinVault ? new PublicKey(event.raydiumCoinVault) : undefined,
-          event.raydiumPcVault ? new PublicKey(event.raydiumPcVault) : undefined
+        liquiditySol = await timeout(
+          getRaydiumLiquiditySol(
+            connection,
+            event.mint,
+            event.raydiumPcMint,
+            event.raydiumCoinVault ? new PublicKey(event.raydiumCoinVault) : undefined,
+            event.raydiumPcVault ? new PublicKey(event.raydiumPcVault) : undefined
+          ),
+          "raydium liquidity"
         );
       }
     } else {
@@ -208,7 +256,7 @@ export async function collectTokenMetrics(
   let topHolderPercent: number | null = null;
   try {
     const exclude = new Set<string>([event.poolAddress, event.raydiumCoinVault, event.raydiumPcVault].filter(Boolean) as string[]);
-    topHolderPercent = await getTopHolderPercent(connection, mint, supplyRaw, exclude);
+    topHolderPercent = await timeout(getTopHolderPercent(connection, mint, supplyRaw, exclude), "top holder %");
   } catch (err: any) {
     warnings.push(`topHolderPercent: ${err?.message || err}`);
   }
@@ -216,7 +264,7 @@ export async function collectTokenMetrics(
   let devWalletPercent: number | null = null;
   try {
     if (event.creator) {
-      devWalletPercent = await getWalletMintPercent(connection, mint, new PublicKey(event.creator), supplyRaw);
+      devWalletPercent = await timeout(getWalletMintPercent(connection, mint, new PublicKey(event.creator), supplyRaw), "dev wallet %");
     } else {
       warnings.push("no creator wallet identified - cannot compute devWalletPercent");
     }
@@ -228,15 +276,24 @@ export async function collectTokenMetrics(
   let transactionCount: number | null = null;
   try {
     const activityAddress = event.poolAddress ? new PublicKey(event.poolAddress) : mint;
-    const activity = await getWalletActivity(connection, activityAddress, config.polling.walletActivitySampleSize);
+    const activity = await timeout(
+      getWalletActivity(connection, activityAddress, polling.walletActivitySampleSize),
+      "wallet activity"
+    );
     uniqueWallets = activity.uniqueWallets;
     transactionCount = activity.transactionCount;
   } catch (err: any) {
     warnings.push(`walletActivity: ${err?.message || err}`);
   }
 
+  const elapsedMs = Date.now() - startedAt;
+  const stale = elapsedMs > polling.metricsMaxAgeMs;
+  if (stale) {
+    warnings.push(`metrics took ${elapsedMs}ms to collect (> metricsMaxAgeMs ${polling.metricsMaxAgeMs}ms) - data may be stale`);
+  }
+
   if (warnings.length > 0) {
-    logger.warn(`Partial metrics for ${event.mint}: ${warnings.join("; ")}`);
+    logger.warn(`Partial/stale metrics for ${event.mint}: ${warnings.join("; ")}`);
   }
 
   return {
@@ -249,6 +306,7 @@ export async function collectTokenMetrics(
     freezeAuthorityRenounced,
     uniqueWallets,
     transactionCount,
+    stale,
     warnings,
   };
 }

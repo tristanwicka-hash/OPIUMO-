@@ -60,11 +60,21 @@ export function evaluateFilters(
   }
 
   // -- renounce status --
-  if (filters.requireMintAuthorityRenounced && !metrics.mintAuthorityRenounced) {
-    reasons.push("mint authority not renounced (dev can still mint more supply)");
+  // null = "couldn't verify" (RPC failure, unsupported mint program, etc) - this is NOT
+  // the same as false ("confirmed still has an authority") and must never be worded like it.
+  if (filters.requireMintAuthorityRenounced) {
+    if (metrics.mintAuthorityRenounced === null) {
+      reasons.push("mint authority renounce status unknown (could not fetch mint account)");
+    } else if (!metrics.mintAuthorityRenounced) {
+      reasons.push("mint authority not renounced (dev can still mint more supply)");
+    }
   }
-  if (filters.requireFreezeAuthorityRenounced && !metrics.freezeAuthorityRenounced) {
-    reasons.push("freeze authority not renounced (dev can still freeze holder wallets)");
+  if (filters.requireFreezeAuthorityRenounced) {
+    if (metrics.freezeAuthorityRenounced === null) {
+      reasons.push("freeze authority renounce status unknown (could not fetch mint account)");
+    } else if (!metrics.freezeAuthorityRenounced) {
+      reasons.push("freeze authority not renounced (dev can still freeze holder wallets)");
+    }
   }
 
   // -- unique wallets vs tx volume --
@@ -92,6 +102,14 @@ export function evaluateFilters(
     }
   }
 
+  // -- staleness --
+  // Metrics that took longer than metricsMaxAgeMs to collect might no longer reflect
+  // the token's current state (liquidity could have been pulled, holders could have
+  // changed) by the time you act on this decision.
+  if (metrics.stale) {
+    reasons.push("metrics are stale (took too long to collect - see config.polling.metricsMaxAgeMs)");
+  }
+
   return {
     mint: event.mint,
     source: event.source,
@@ -103,19 +121,30 @@ export function evaluateFilters(
   };
 }
 
-/** One-line, human-scannable summary for the live console feed. */
+/** One-line (plus warnings/reasons) human-scannable summary for the live console feed. */
 export function formatDecisionLine(result: FilterResult): string {
   const m = result.metrics;
   const fmt = (v: number | null, suffix = "") => (v === null ? "?" : `${v.toFixed(2)}${suffix}`);
+  const fmtBool = (v: boolean | null) => (v === null ? "?" : v ? "Y" : "N");
 
   const summary =
     `liquidity=${fmt(m.liquiditySol, "SOL")} topHolder=${fmt(m.topHolderPercent, "%")} ` +
-    `devWallet=${fmt(m.devWalletPercent, "%")} renounced=${m.mintAuthorityRenounced ? "Y" : "N"}/${
-      m.freezeAuthorityRenounced ? "Y" : "N"
-    } wallets=${m.uniqueWallets ?? "?"} txs=${m.transactionCount ?? "?"}`;
+    `devWallet=${fmt(m.devWalletPercent, "%")} renounced=${fmtBool(m.mintAuthorityRenounced)}/${fmtBool(
+      m.freezeAuthorityRenounced
+    )} wallets=${m.uniqueWallets ?? "?"} txs=${m.transactionCount ?? "?"}${m.stale ? " [STALE]" : ""}`;
 
-  if (result.decision === "PASS") {
-    return `[PASS] ${result.source.padEnd(7)} ${result.mint}  ${summary}`;
+  const lines = [
+    result.decision === "PASS"
+      ? `[PASS] ${result.source.padEnd(7)} ${result.mint}  ${summary}`
+      : `[SKIP] ${result.source.padEnd(7)} ${result.mint}  ${summary}\n       reasons: ${result.reasons.join("; ")}`,
+  ];
+
+  // Always surface partial-fetch warnings, even on a PASS - "we couldn't verify X so we
+  // fell back to a safe default" is exactly the kind of thing the manual-verification
+  // step (README non-negotiables) needs to see, not just the raw JSONL log.
+  if (m.warnings.length > 0) {
+    lines.push(`       warnings: ${m.warnings.join("; ")}`);
   }
-  return `[SKIP] ${result.source.padEnd(7)} ${result.mint}  ${summary}\n       reasons: ${result.reasons.join("; ")}`;
+
+  return lines.join("\n");
 }

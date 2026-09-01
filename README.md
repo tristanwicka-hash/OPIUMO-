@@ -20,7 +20,44 @@ tested, and safe to run vs. what's implemented but still gated off.
 ```bash
 npm install
 cp .env.example .env   # fill in RPC_URL (and later WALLET_PRIVATE_KEY)
+npm test               # runs every test suite (Parts 1-4) - see "Hardening pass" below
 ```
+
+## Hardening pass (2026-09-01)
+
+After Parts 1-4 were built, they went through a dedicated "what could go
+wrong" review (a code-review pass plus a manual sweep of the RPC/watcher/
+metrics layers) before any Part 5 work started. Six real issues were found
+and fixed - all covered by new/updated tests, all still offline/deterministic
+except the Part 1/2 live checks that need your own RPC:
+
+| Issue | Fix |
+|---|---|
+| A failed renounce-status RPC call was reported identically to a *confirmed* "not renounced" finding - one flaky call could produce a SKIP that looked like a real rug signal | `mintAuthorityRenounced`/`freezeAuthorityRenounced` are now `boolean \| null`; `null` gets its own "unknown (could not fetch...)" reason, matching every other metric |
+| Partial-fetch warnings only showed up in `logs/decisions.jsonl`, never on the console line you actually watch live | `formatDecisionLine()` now prints `warnings: ...` under any decision (PASS or SKIP) that has them |
+| `polling.metricsMaxAgeMs` / `metricsFetchTimeoutMs` were documented config knobs that no code ever read | every RPC call in `collectTokenMetrics()` is now wrapped in a timeout; collection slower than `metricsMaxAgeMs` sets `metrics.stale = true`, which the filter engine treats as an automatic SKIP |
+| Token-2022 mints threw and were silently mistaken for a fetch failure (compounding the first issue above) | `getRenounceStatus()` detects the mint's owning program and decodes with the correct one |
+| `PoolWatcher`'s websocket subscription had no reconnect logic - a silent drop meant the bot would just go quiet with no error | added an `onSlotChange` heartbeat + health-check timer; no slot update for `staleConnectionThresholdMs` (default 30s) triggers an automatic unsubscribe/resubscribe |
+| A redelivered/duplicated log for the same signature could be processed twice | added a bounded in-memory dedup set keyed by signature |
+
+Also fixed: `npm test` (`tests/run-all.ts`) was referenced in `package.json`
+since the very first commit but the file didn't exist - it does now, and
+chains all four suites with one combined pass/fail.
+
+**Still open / by design, not fixed** (flagged here rather than silently
+left out):
+- Raydium `initialize2` account indices (`src/watcher/raydiumWatcher.ts`)
+  still need a live spot-check against real Solscan transactions - this needs
+  your own RPC access, not something fixable from this sandbox.
+- Pump.fun's `liquiditySol` is the bonding curve's *real* SOL balance, not
+  the *virtual*-reserve-inclusive number Pump.fun's own UI shows as market
+  cap - worth eyeballing against a few live tokens before trusting the
+  `minLiquiditySol` threshold as-is.
+- `getTopHolderPercent` is capped at the RPC's top-20 accounts
+  (`getTokenLargestAccounts`) - a dev who splits their bag across 20+ wallets
+  won't be caught. Inherent RPC limitation, not a bug.
+- No log rotation on `logs/decisions.jsonl` - fine for now, will grow
+  unbounded on a long-running instance.
 
 ## Status
 

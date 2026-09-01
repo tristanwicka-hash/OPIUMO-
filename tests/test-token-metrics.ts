@@ -10,7 +10,7 @@
  * Parts 1-2's live smoke tests.
  */
 import { Keypair, PublicKey, Connection } from "@solana/web3.js";
-import { MintLayout, TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import { MintLayout, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
 import {
   getRenounceStatus,
   getTopHolderPercent,
@@ -19,6 +19,7 @@ import {
   getRaydiumLiquiditySol,
   getWalletActivity,
   collectTokenMetrics,
+  withTimeout,
   WSOL_MINT,
 } from "../src/data/tokenMetrics";
 import { NewPoolEvent } from "../src/watcher/types";
@@ -102,6 +103,23 @@ async function main() {
     });
     const status = await getRenounceStatus(conn, Keypair.generate().publicKey);
     check("mint with live authorities reports NOT renounced", !status.mintAuthorityRenounced && !status.freezeAuthorityRenounced);
+  }
+  {
+    // Token-2022 mint: owner is the Token-2022 program, not the classic Token Program.
+    // A plain getMint() call (no programId) would throw here - getRenounceStatus must
+    // detect the owner and decode with the right program ID instead of treating this
+    // as an unsupported/failed fetch.
+    const conn = mockConnection({
+      getAccountInfo: async () => ({
+        data: encodeMint({ mintAuthority: null, freezeAuthority: null, supply: 500_000_000n, decimals: 9 }),
+        owner: TOKEN_2022_PROGRAM_ID,
+        executable: false,
+        lamports: 1,
+      }),
+    });
+    const status = await getRenounceStatus(conn, Keypair.generate().publicKey);
+    check("Token-2022 mint is decoded correctly (not treated as a fetch failure)", status.mintAuthorityRenounced && status.freezeAuthorityRenounced);
+    check("Token-2022 supply decoded correctly", status.supplyRaw === 500_000_000n);
   }
 
   console.log("\n-- top holder % (excluding pool) --");
@@ -214,7 +232,68 @@ async function main() {
     }
     check("collectTokenMetrics does not throw even when every RPC call fails", !threw);
     check("collectTokenMetrics reports warnings instead of crashing", !!metrics && metrics.warnings.length > 0);
-    check("collectTokenMetrics defaults renounce flags to false (fail closed) on error", !!metrics && metrics.mintAuthorityRenounced === false);
+    check(
+      "collectTokenMetrics reports renounce status as null/'unknown' on error, NOT false ('confirmed not renounced')",
+      !!metrics && metrics.mintAuthorityRenounced === null && metrics.freezeAuthorityRenounced === null
+    );
+  }
+
+  console.log("\n-- withTimeout --");
+  {
+    const fast = await withTimeout(Promise.resolve("ok"), 1000, "fast call");
+    check("withTimeout resolves normally when the promise beats the deadline", fast === "ok");
+  }
+  {
+    const neverResolves = new Promise(() => {}); // simulates a hung RPC call
+    let threw = false;
+    let message = "";
+    try {
+      await withTimeout(neverResolves, 30, "slow call");
+    } catch (err: any) {
+      threw = true;
+      message = err?.message || "";
+    }
+    check("withTimeout rejects a hung call instead of hanging forever", threw);
+    check("withTimeout's error names the call and the deadline", message.includes("slow call") && message.includes("30ms"));
+  }
+
+  console.log("\n-- staleness (metricsMaxAgeMs) --");
+  {
+    // A slow-but-successful RPC call that beats the per-call timeout, but the whole
+    // collection still takes longer than the configured "max age" - should be flagged
+    // stale, not silently treated as fresh data.
+    const conn = mockConnection({
+      getBalance: async () => {
+        await new Promise((r) => setTimeout(r, 40));
+        return 5_000_000_000; // 5 SOL
+      },
+    });
+    const event: NewPoolEvent = {
+      source: "pumpfun",
+      signature: "sig-stale",
+      slot: 1,
+      mint: Keypair.generate().publicKey.toBase58(),
+      poolAddress: Keypair.generate().publicKey.toBase58(),
+      creator: Keypair.generate().publicKey.toBase58(),
+      detectedAt: new Date().toISOString(),
+    };
+    const metrics = await collectTokenMetrics(conn, event, { metricsMaxAgeMs: 10, metricsFetchTimeoutMs: 5000 });
+    check("collection slower than metricsMaxAgeMs is flagged stale", metrics.stale === true);
+    check("staleness is also reported as a warning", metrics.warnings.some((w) => w.includes("stale")));
+  }
+  {
+    const conn = mockConnection({ getBalance: async () => 5_000_000_000 });
+    const event: NewPoolEvent = {
+      source: "pumpfun",
+      signature: "sig-fresh",
+      slot: 1,
+      mint: Keypair.generate().publicKey.toBase58(),
+      poolAddress: Keypair.generate().publicKey.toBase58(),
+      creator: Keypair.generate().publicKey.toBase58(),
+      detectedAt: new Date().toISOString(),
+    };
+    const metrics = await collectTokenMetrics(conn, event, { metricsMaxAgeMs: 5000, metricsFetchTimeoutMs: 5000 });
+    check("fast collection under metricsMaxAgeMs is NOT flagged stale", metrics.stale === false);
   }
 
   console.log(`\nTotal: ${pass} passed, ${fail} failed`);

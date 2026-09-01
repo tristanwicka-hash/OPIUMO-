@@ -49,6 +49,7 @@ function goodMetrics(overrides: Partial<TokenMetrics> = {}): TokenMetrics {
     devWalletPercent: 5,
     mintAuthorityRenounced: true,
     freezeAuthorityRenounced: true,
+    stale: false,
     uniqueWallets: 40,
     transactionCount: 60,
     warnings: [],
@@ -99,13 +100,27 @@ async function main() {
   }
   {
     const r = evaluateFilters(event, goodMetrics({ mintAuthorityRenounced: false }), filters);
-    check("mint authority not renounced -> SKIP", r.decision === "SKIP");
-    check("reason mentions mint authority", r.reasons.some((x) => x.includes("mint authority")));
+    check("mint authority CONFIRMED not renounced -> SKIP", r.decision === "SKIP");
+    check("reason says 'not renounced' (a confirmed fact), not 'unknown'", r.reasons.some((x) => x.includes("mint authority not renounced")));
   }
   {
     const r = evaluateFilters(event, goodMetrics({ freezeAuthorityRenounced: false }), filters);
-    check("freeze authority not renounced -> SKIP", r.decision === "SKIP");
-    check("reason mentions freeze authority", r.reasons.some((x) => x.includes("freeze authority")));
+    check("freeze authority CONFIRMED not renounced -> SKIP", r.decision === "SKIP");
+    check("reason says 'not renounced' (a confirmed fact), not 'unknown'", r.reasons.some((x) => x.includes("freeze authority not renounced")));
+  }
+  {
+    // null = "we couldn't verify" (e.g. an RPC call failed) - this must NEVER be worded
+    // the same as false ("we checked, and it's confirmed not renounced"). Regression test
+    // for the bug where a transient RPC failure looked identical to a real red flag.
+    const r = evaluateFilters(event, goodMetrics({ mintAuthorityRenounced: null, freezeAuthorityRenounced: null }), filters);
+    check("UNKNOWN renounce status -> SKIP (fails closed)", r.decision === "SKIP");
+    check(
+      "reasons say 'unknown', NOT 'not renounced' - never overstate an RPC failure as a confirmed finding",
+      r.reasons.some((x) => x.includes("mint authority renounce status unknown")) &&
+        r.reasons.some((x) => x.includes("freeze authority renounce status unknown")) &&
+        !r.reasons.some((x) => x.includes("mint authority not renounced")) &&
+        !r.reasons.some((x) => x.includes("freeze authority not renounced"))
+    );
   }
   {
     const r = evaluateFilters(event, goodMetrics({ uniqueWallets: filters.minUniqueWallets - 1 }), filters);
@@ -135,6 +150,13 @@ async function main() {
     check("4 distinct 'unknown' reasons reported", r.reasons.filter((x) => x.includes("unknown")).length === 4); // liquidity, topHolder, devWallet, wallet activity (combined)
   }
 
+  console.log("\n-- stale metrics never silently PASS --");
+  {
+    const r = evaluateFilters(event, goodMetrics({ stale: true }), filters);
+    check("stale metrics -> SKIP even though every value looks good", r.decision === "SKIP");
+    check("reason mentions staleness", r.reasons.some((x) => x.includes("stale")));
+  }
+
   console.log("\n-- multiple simultaneous failures are all reported, not just the first --");
   {
     const r = evaluateFilters(
@@ -152,6 +174,15 @@ async function main() {
     const skipLine = formatDecisionLine(evaluateFilters(event, goodMetrics({ liquiditySol: 0 }), filters));
     check("PASS line starts with [PASS]", passLine.startsWith("[PASS]"));
     check("SKIP line starts with [SKIP] and includes reasons", skipLine.startsWith("[SKIP]") && skipLine.includes("reasons:"));
+    check("renounced=?/? shown when renounce status is unknown, not Y/Y or N/N", formatDecisionLine(evaluateFilters(event, goodMetrics({ mintAuthorityRenounced: null, freezeAuthorityRenounced: null }), filters)).includes("renounced=?/?"));
+  }
+  {
+    // A PASS that only happened because a partial fetch failure was masked would be
+    // invisible during manual review unless warnings are printed right on the line.
+    const passWithWarning = evaluateFilters(event, goodMetrics({ warnings: ["devWalletPercent: rpc timeout"] }), filters);
+    const line = formatDecisionLine(passWithWarning);
+    check("PASS decision is unaffected by an unrelated warning", passWithWarning.decision === "PASS");
+    check("warnings are printed on the console line even for a PASS", line.includes("warnings:") && line.includes("rpc timeout"));
   }
 
   console.log(`\nOffline checks: ${pass} passed, ${fail} failed`);
