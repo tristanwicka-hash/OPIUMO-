@@ -16,17 +16,34 @@ export interface TakeProfitStep {
   sellPercentOfRemaining: number;
 }
 
+export interface JupiterConfig {
+  quoteApiUrl: string;
+  swapApiUrl: string;
+  requestTimeoutMs: number;
+}
+
 export interface TradingConfig {
   enabled: boolean;
   /** Your total trading bankroll in SOL - position sizes are derived from this, not a flat amount. */
   totalCapitalSol: number;
   /** 0.5-1% per the strategy spec. Actual position is ALSO clamped by a non-overridable hard cap in code (src/trading/sizing.ts) that this value cannot loosen. */
   riskPercentPerTrade: number;
+  /** Caps how many positions can be open AT ONCE - each trade respects the 1% hard cap individually, but nothing else stops 50 of them stacking up. Not in the original spec; added because that gap was worth closing. */
+  maxOpenPositions: number;
   maxSlippageBps: number;
   takeProfitLadder: TakeProfitStep[];
   /** ATR-based stop-loss: stopLossPrice = entryPrice - (atrStopMultiplier * ATR(atrPeriod)). */
   atrPeriod: number;
   atrStopMultiplier: number;
+  /**
+   * A brand-new token has zero price history at the moment you'd enter, so there's no ATR yet
+   * to size the stop from - the spec doesn't address this gap, so this is a deliberate addition:
+   * a flat % used ONLY for the very first stop (and therefore the entry position size, which is
+   * derived from stop distance) until enough price samples accumulate to compute a real ATR
+   * stop. Once ATR becomes available, the stop only ever TIGHTENS toward it (moves closer to
+   * entry), never loosens back out - see src/trading/engine.ts.
+   */
+  fallbackStopLossPercent: number;
   /** Trailing stop activates once price has reached this multiple of entry, then trails at trailingStopPercent below the highest price seen since. */
   trailingStopActivateMultiple: number;
   trailingStopPercent: number;
@@ -104,6 +121,7 @@ export interface FundingArbConfig {
 }
 
 export interface AppConfig {
+  jupiter: JupiterConfig;
   trading: TradingConfig;
   filters: FiltersConfig;
   sources: SourcesConfig;
@@ -145,6 +163,8 @@ function validate(config: AppConfig): void {
   if (config.trading.takeProfitLadder.length === 0) errors.push("trading.takeProfitLadder must have at least one step");
   if (config.trading.atrPeriod <= 0) errors.push("trading.atrPeriod must be > 0");
   if (config.trading.atrStopMultiplier <= 0) errors.push("trading.atrStopMultiplier must be > 0");
+  if (config.trading.fallbackStopLossPercent >= 0) errors.push("trading.fallbackStopLossPercent must be negative (e.g. -30)");
+  if (config.trading.maxOpenPositions <= 0) errors.push("trading.maxOpenPositions must be > 0");
   if (config.trading.trailingStopActivateMultiple <= 1) errors.push("trading.trailingStopActivateMultiple must be > 1 (it's a multiple of entry price)");
   if (config.trading.trailingStopPercent <= 0 || config.trading.trailingStopPercent >= 100) {
     errors.push("trading.trailingStopPercent must be between 0 and 100");

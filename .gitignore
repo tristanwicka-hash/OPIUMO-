@@ -3,6 +3,7 @@ dist/
 .env
 logs/*.log
 logs/*.jsonl
+logs/*.json
 !logs/.gitkeep
 data/*.jsonl
 !data/.gitkeep

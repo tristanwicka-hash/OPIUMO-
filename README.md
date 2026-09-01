@@ -72,9 +72,7 @@ up yourself once archived. Covered by `npm run test:logger` (5/5 pass).
 | 2 | New pool watcher (Pump.fun/Raydium) | ✅ built, ⚠️ account indices need live verification | `npm run test:watcher` |
 | 3 | Token metrics (holders, liquidity, dev %, renounced, wallets/volume) | ✅ built + fully unit-tested offline | `npm run test:metrics` |
 | 4 | Filter engine + PASS/SKIP logging (no buying) | ✅ built + fully unit-tested offline | `npm run test:filters` |
-| 5 | Auto-buy via Jupiter | ⏳ | gated by `trading.enabled` |
-| 6 | Auto-sell TP/SL ladder | ⏳ | gated by `trading.enabled` |
-| 7 | Trade logging (entry/exit/P&L) | ⏳ | |
+| 5-7 | **Meme-coin snipe/scalp strategy**: auto-buy (Jupiter), ATR stop / tiered take-profit / trailing stop / time-stop, trade logging | ✅ built + decision logic fully unit-tested offline | `npm run test:trading-signals`, `test:trading-engine-gating`, `test:trading-live` |
 | 8 | **Perps trading (Drift Protocol)** - plumbing only, no strategy | ✅ built + risk engine fully unit-tested offline | `npm run test:perps-risk`, `npm run test:perps-connection` |
 | 9 | **Funding Rate Arbitrage strategy** (Drift) - the first real strategy on top of Part 8's plumbing | ✅ built + signal logic fully unit-tested offline | `npm run test:funding-arb-signals`, `npm run test:funding-arb-live` |
 
@@ -220,6 +218,68 @@ drift out of sync with what's actually on-chain.
 ```bash
 npm run test:funding-arb-signals  # 35/35 offline - read this before enabling anything
 npm run test:funding-arb-live     # needs your own RPC + wallet; runs ONE real evaluation cycle, no order unless signals say to AND both enabled flags are true
+```
+
+### Parts 5-7: meme-coin snipe/scalp strategy (spot, Pump.fun/Raydium)
+
+The strategy the whole spot side (Parts 1-4) was building toward: auto-buy
+tokens that PASS the filter engine, manage them through a tiered exit
+ladder, then log every trade. Per your spec, plus two things it didn't
+address that had to be resolved somehow (flagged clearly, not silently):
+
+**Note on `env: "devnet"` from your spec:** unlike Drift, Pump.fun has no
+meaningful devnet deployment to test against - there's no real liquidity or
+activity there. The actual safety mechanisms for this track are what the
+spec's own risk gates called for: `trading.enabled` defaults `false`, and
+**use a separate, minimally-funded wallet** (your spec's own words) - that's
+on you to set up, code can't verify a wallet is "not your main one." Start
+`trading.totalCapitalSol` small.
+
+**The ATR-then-sizing chicken-and-egg problem:** the spec sizes positions
+from stop-loss distance, and the stop-loss is ATR-based - but a brand-new
+token has zero price history at the moment you'd enter, so there's no ATR
+yet to compute anything from. Resolved with `trading.fallbackStopLossPercent`
+(-30% default): used only for the very first stop (and therefore entry
+sizing); once enough price samples accumulate, the stop switches to the real
+ATR-based value and only ever *tightens* toward it from there, never loosens
+back out to the fallback.
+
+**Position count wasn't capped in the spec** (only per-trade size was) -
+added `trading.maxOpenPositions` (default 5) so an unbounded number of
+individually-small positions can't stack up to deploy far more capital in
+aggregate than intended. Same category of gap as `perps.maxOpenPositions`,
+which already existed on the Drift side.
+
+What's built, mapped to your spec:
+
+| Your spec | Implementation |
+|---|---|
+| Entry filters, PASS/SKIP with reasons | Part 4's filter engine, extended with LP-lock/burn and honeypot (Token-2022 extension) checks - see the hardening-pass-style commit for those |
+| Max 0.5-1% of capital per trade, hard cap, non-overridable | `src/trading/sizing.ts` - a source-code constant (1%), not a config value, so config can't loosen it. Sized from stop-loss distance via the same fixed-fractional formula as the funding-arb strategy (`src/util/riskSizing.ts`, shared) |
+| Exit ladder: 2x sell 50%, 5x sell 25% of remainder, 10x sell 25% of remainder | `trading.takeProfitLadder`, checked by `src/trading/exitLogic.ts`'s `checkLadderTier()` - each tier fires once |
+| ATR stop-loss, ~1.5-2x the 14-period ATR | `trading.atrPeriod`/`atrStopMultiplier`, `src/trading/atr.ts`. Documented limitation: real OHLC candles don't exist for a token this new, so it's built from point-in-time price samples (see the code comment for what that costs in accuracy) |
+| Time-stop: exit if the position hasn't moved in 24-72h | `trading.timeStopHours` (default 48), `checkTimeStop()` - "moved" means ever reached the first ladder tier, so a pump-then-dump doesn't false-trigger this |
+| Trailing stop: after 2x, trail -30% from the highest price reached | `trading.trailingStopActivateMultiple`/`trailingStopPercent`, `checkTrailingStop()` |
+| Separate, minimally-funded wallet | Not code-enforceable (see above) - your discipline, not a config flag |
+| Trade logging (entry, exit, reason, P&L) | `src/trading/tradeLog.ts` → `logs/trades.jsonl`, same rotation as every other log here |
+
+`src/trading/engine.ts` (`SpotTradingEngine`) is the orchestrator: Part 4's
+`PASS` → `onFilterPass()` sizes and buys via Jupiter (`src/trading/jupiter.ts`
+- a thin REST client against Jupiter's public Swap API, config-driven URL
+since it couldn't be verified live from this sandbox and Jupiter has moved
+this endpoint before) → position tracked in `src/trading/positionStore.ts`
+(persisted JSON - unlike the funding-arb strategy, there's no on-chain
+source of truth for "which ladder tiers already fired," this bot has to
+remember it itself) → a timer (`trading.priceCheckIntervalMs`) runs every
+open position through the exit checks in priority order (stop-loss →
+trailing stop → time-stop → ladder tier) each cycle. Wired into
+`src/index.ts`: a filter `PASS` calls straight into this when
+`trading.enabled` is true, nothing changes when it's false.
+
+```bash
+npm run test:trading-signals         # 26/26 offline - sizing, ATR, all four exit signals - read this first
+npm run test:trading-engine-gating   # 3/3 offline - the trading.enabled / non-PASS gates specifically
+npm run test:trading-live            # needs real network; gets one real Jupiter quote, no swap, no funds moved
 ```
 
 ### Part 1: RPC connection

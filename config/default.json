@@ -1,11 +1,19 @@
 {
   "_comment": "All tunables live here so you never have to touch source code. Edit, save, restart the bot.",
 
+  "jupiter": {
+    "_comment": "Jupiter's public Swap API for actually executing buys/sells. These URLs could NOT be verified live from this sandbox (no network egress here) - Jupiter has moved/renamed this endpoint before (quote-api.jup.ag -> lite-api.jup.ag among others). If swaps start failing with connection errors, check https://dev.jup.ag for the current endpoint and update here - one place, no code changes needed.",
+    "quoteApiUrl": "https://quote-api.jup.ag/v6/quote",
+    "swapApiUrl": "https://quote-api.jup.ag/v6/swap",
+    "requestTimeoutMs": 10000
+  },
+
   "trading": {
     "_comment": "Master switch. MUST be flipped to true by hand once you have verified the filter logic yourself. See NON-NEGOTIABLES in README.md. Position sizing is risk-based (from stop-loss distance), not a flat SOL amount - set totalCapitalSol to your real trading bankroll. riskPercentPerTrade is your dial (0.5-1% per the strategy spec); there is ALSO a non-overridable hard cap (1% of capital) enforced in src/trading/sizing.ts that no config value can loosen - in practice that hard cap is what actually sizes most trades, see the comment there.",
     "enabled": false,
     "totalCapitalSol": 10,
     "riskPercentPerTrade": 0.75,
+    "maxOpenPositions": 5,
     "maxSlippageBps": 300,
     "takeProfitLadder": [
       { "atMultipleOfEntry": 2, "sellPercentOfRemaining": 50 },
@@ -14,6 +22,7 @@
     ],
     "atrPeriod": 14,
     "atrStopMultiplier": 1.75,
+    "fallbackStopLossPercent": -30,
     "trailingStopActivateMultiple": 2,
     "trailingStopPercent": 30,
     "timeStopHours": 48,

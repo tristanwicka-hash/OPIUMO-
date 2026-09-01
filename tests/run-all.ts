@@ -19,6 +19,8 @@ const suites = [
   { name: "Funding-arb signals (offline)", script: "tests/test-funding-arb-signals.ts" },
   { name: "Funding-arb live cycle", script: "tests/test-funding-arb-live.ts" },
   { name: "Spot sniper sizing/ATR/exit logic (offline)", script: "tests/test-trading-signals.ts" },
+  { name: "Spot sniper engine gates (offline)", script: "tests/test-trading-engine-gating.ts" },
+  { name: "Spot sniper Jupiter quote (live)", script: "tests/test-trading-live.ts" },
 ];
 
 let anyFailed = false;
