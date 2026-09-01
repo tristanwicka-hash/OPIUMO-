@@ -18,10 +18,20 @@ export interface TakeProfitStep {
 
 export interface TradingConfig {
   enabled: boolean;
-  positionSizeSol: number;
+  /** Your total trading bankroll in SOL - position sizes are derived from this, not a flat amount. */
+  totalCapitalSol: number;
+  /** 0.5-1% per the strategy spec. Actual position is ALSO clamped by a non-overridable hard cap in code (src/trading/sizing.ts) that this value cannot loosen. */
+  riskPercentPerTrade: number;
   maxSlippageBps: number;
   takeProfitLadder: TakeProfitStep[];
-  stopLossPercent: number;
+  /** ATR-based stop-loss: stopLossPrice = entryPrice - (atrStopMultiplier * ATR(atrPeriod)). */
+  atrPeriod: number;
+  atrStopMultiplier: number;
+  /** Trailing stop activates once price has reached this multiple of entry, then trails at trailingStopPercent below the highest price seen since. */
+  trailingStopActivateMultiple: number;
+  trailingStopPercent: number;
+  /** Exit if the position hasn't moved (see src/trading/exitLogic.ts for "moved") within this many hours of entry. */
+  timeStopHours: number;
   priceCheckIntervalMs: number;
 }
 
@@ -34,6 +44,8 @@ export interface FiltersConfig {
   minUniqueWallets: number;
   minTransactionCount: number;
   minUniqueWalletToTxRatio: number;
+  rejectRiskyTokenExtensions: boolean;
+  maxCreatorLpPercent: number;
 }
 
 export interface SourcesConfig {
@@ -128,9 +140,16 @@ function validate(config: AppConfig): void {
   const errors: string[] = [];
 
   if (!config.rpcUrl) errors.push("RPC_URL is not set in .env");
-  if (config.trading.positionSizeSol <= 0) errors.push("trading.positionSizeSol must be > 0");
-  if (config.trading.stopLossPercent >= 0) errors.push("trading.stopLossPercent must be negative (e.g. -30)");
+  if (config.trading.totalCapitalSol <= 0) errors.push("trading.totalCapitalSol must be > 0 (your trading bankroll, used to size every position)");
+  if (config.trading.riskPercentPerTrade <= 0) errors.push("trading.riskPercentPerTrade must be > 0");
   if (config.trading.takeProfitLadder.length === 0) errors.push("trading.takeProfitLadder must have at least one step");
+  if (config.trading.atrPeriod <= 0) errors.push("trading.atrPeriod must be > 0");
+  if (config.trading.atrStopMultiplier <= 0) errors.push("trading.atrStopMultiplier must be > 0");
+  if (config.trading.trailingStopActivateMultiple <= 1) errors.push("trading.trailingStopActivateMultiple must be > 1 (it's a multiple of entry price)");
+  if (config.trading.trailingStopPercent <= 0 || config.trading.trailingStopPercent >= 100) {
+    errors.push("trading.trailingStopPercent must be between 0 and 100");
+  }
+  if (config.trading.timeStopHours <= 0) errors.push("trading.timeStopHours must be > 0");
   if (config.trading.enabled && !config.walletPrivateKey) {
     errors.push("trading.enabled is true but WALLET_PRIVATE_KEY is not set in .env");
   }

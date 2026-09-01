@@ -77,6 +77,34 @@ export function evaluateFilters(
     }
   }
 
+  // -- honeypot check: risky Token-2022 extensions (transfer hook, permanent delegate) --
+  // "Bundle" detection (many wallets funded from one source at launch) is NOT a separate check
+  // here - it's already served by the wallet/tx ratio rule just below, which catches the same
+  // underlying pattern (volume concentrated in very few distinct wallets) without needing an
+  // expensive per-holder funding-source trace.
+  if (filters.rejectRiskyTokenExtensions) {
+    if (metrics.riskyTokenExtensions === null) {
+      reasons.push("token extensions unknown (could not fetch mint account)");
+    } else if (metrics.riskyTokenExtensions.length > 0) {
+      reasons.push(`risky token extensions present: ${metrics.riskyTokenExtensions.join(", ")}`);
+    }
+  }
+
+  // -- LP locked/burned (Raydium only - see TokenMetrics.lpCheckApplicable) --
+  if (metrics.lpCheckApplicable) {
+    if (metrics.creatorLpPercent === null) {
+      reasons.push("creator LP % unknown (could not fetch LP mint/holdings)");
+    } else if (metrics.creatorLpPercent > filters.maxCreatorLpPercent) {
+      reasons.push(
+        `creator still holds ${metrics.creatorLpPercent.toFixed(2)}% of LP supply (> max ${filters.maxCreatorLpPercent}%) ` +
+          `- liquidity is not locked/burned, creator could withdraw it`
+      );
+    }
+  }
+  // Pump.fun (lpCheckApplicable === false): no separate LP token pre-migration, and the bonding
+  // curve's own program logic makes the liquidity structurally un-rug-pullable by the creator -
+  // this check is not applicable and does not add a reason either way.
+
   // -- unique wallets vs tx volume --
   if (metrics.uniqueWallets === null || metrics.transactionCount === null) {
     reasons.push("wallet activity unknown (could not fetch recent signatures)");

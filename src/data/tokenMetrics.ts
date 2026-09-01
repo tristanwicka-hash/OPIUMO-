@@ -1,5 +1,5 @@
 import { Connection, PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
-import { unpackMint, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
+import { unpackMint, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, getExtensionTypes, ExtensionType } from "@solana/spl-token";
 import { loadConfig, PollingConfig } from "../config";
 import { Logger } from "../util/logger";
 import { NewPoolEvent } from "../watcher/types";
@@ -27,6 +27,28 @@ export interface TokenMetrics {
 
   uniqueWallets: number | null;
   transactionCount: number | null;
+
+  /**
+   * "Honeypot" isn't a meaningful concept for a classic SPL Token transfer (the program logic
+   * is fixed and identical for every token - freezeAuthority above is the one real way a token
+   * can be made unsellable, and that's already checked). Token-2022 adds extensions that COULD
+   * implement honeypot-like behavior though: a transfer hook can arbitrarily block/tax
+   * transfers, and a permanent delegate can move or burn any holder's tokens without consent.
+   * Empty array = none of those found (or a classic SPL Token, which can't have them at all).
+   * null = couldn't verify (RPC failure) - fails closed, same as the renounce checks.
+   */
+  riskyTokenExtensions: string[] | null;
+
+  /**
+   * % of the Raydium LP token supply the pool creator personally holds (i.e. NOT locked/burned -
+   * withdrawable by them at will). Only meaningful for Raydium pools - a Pump.fun bonding curve
+   * has no separate LP token, and the program's own logic makes the liquidity structurally
+   * un-rug-pullable pre-migration, so lpCheckApplicable is false there and this stays null
+   * (that null does NOT mean "unknown/fail" here - see lpCheckApplicable).
+   */
+  creatorLpPercent: number | null;
+  /** True only for Raydium pools - tells the filter engine whether creatorLpPercent should be evaluated at all. */
+  lpCheckApplicable: boolean;
 
   /** True if collecting these metrics took longer than polling.metricsMaxAgeMs - treat with suspicion, the token's on-chain state may have moved since. */
   stale: boolean;
@@ -56,6 +78,12 @@ export function withTimeout<T>(promise: Promise<T>, ms: number, label: string): 
  * accordingly (a plain getMint() call defaults to the classic program and throws on Token-2022
  * mints, which would otherwise look identical to a fetch failure).
  */
+/** Token-2022 extensions that can implement honeypot-like behavior (see TokenMetrics.riskyTokenExtensions). */
+const RISKY_EXTENSION_NAMES: Partial<Record<number, string>> = {
+  [ExtensionType.TransferHook]: "TransferHook (can arbitrarily block/tax transfers)",
+  [ExtensionType.PermanentDelegate]: "PermanentDelegate (can move/burn any holder's tokens without consent)",
+};
+
 export async function getRenounceStatus(connection: Connection, mint: PublicKey) {
   const accountInfo = await connection.getAccountInfo(mint);
   if (!accountInfo) {
@@ -63,12 +91,38 @@ export async function getRenounceStatus(connection: Connection, mint: PublicKey)
   }
   const programId = accountInfo.owner.equals(TOKEN_2022_PROGRAM_ID) ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
   const info = unpackMint(mint, accountInfo, programId);
+
+  const riskyTokenExtensions =
+    programId.equals(TOKEN_2022_PROGRAM_ID) && info.tlvData.length > 0
+      ? getExtensionTypes(info.tlvData)
+          .map((t) => RISKY_EXTENSION_NAMES[t])
+          .filter((name): name is string => !!name)
+      : [];
+
   return {
     mintAuthorityRenounced: info.mintAuthority === null,
     freezeAuthorityRenounced: info.freezeAuthority === null,
     supplyRaw: info.supply, // bigint, smallest units
     decimals: info.decimals,
+    riskyTokenExtensions,
   };
+}
+
+/**
+ * % of a Raydium pool's LP token supply the creator wallet still holds - i.e. the % that is
+ * NOT locked or burned and could be withdrawn (rug-pulled) at will. Reuses getWalletMintPercent
+ * against the LP mint instead of the token mint - same math, different target.
+ */
+export async function getCreatorLpPercent(
+  connection: Connection,
+  lpMint: PublicKey,
+  creator: PublicKey
+): Promise<number | null> {
+  // Reusing getRenounceStatus purely for its supplyRaw return - LP mints' own renounce status
+  // isn't meaningful here, we just need the total LP supply to compute a %.
+  const lpRenounce = await getRenounceStatus(connection, lpMint).catch(() => null);
+  if (!lpRenounce) return null;
+  return getWalletMintPercent(connection, lpMint, creator, lpRenounce.supplyRaw);
 }
 
 /**
@@ -215,17 +269,40 @@ export async function collectTokenMetrics(
 
   let mintAuthorityRenounced: boolean | null = null;
   let freezeAuthorityRenounced: boolean | null = null;
+  let riskyTokenExtensions: string[] | null = null;
   let supplyRaw = 0n;
   try {
     const renounce = await timeout(getRenounceStatus(connection, mint), "renounce status");
     mintAuthorityRenounced = renounce.mintAuthorityRenounced;
     freezeAuthorityRenounced = renounce.freezeAuthorityRenounced;
+    riskyTokenExtensions = renounce.riskyTokenExtensions;
     supplyRaw = renounce.supplyRaw;
   } catch (err: any) {
     warnings.push(`renounce status: ${err?.message || err}`);
-    // mintAuthorityRenounced/freezeAuthorityRenounced stay null ("unknown"), NOT false
-    // ("confirmed not renounced") - the filter engine tells those two states apart.
+    // mintAuthorityRenounced/freezeAuthorityRenounced/riskyTokenExtensions stay null ("unknown"),
+    // NOT false/empty ("confirmed clean") - the filter engine tells those states apart.
   }
+
+  let creatorLpPercent: number | null = null;
+  const lpCheckApplicable = event.source === "raydium";
+  if (lpCheckApplicable) {
+    try {
+      if (!event.raydiumLpMint || !event.creator) {
+        warnings.push("no lpMint or creator captured - cannot compute creatorLpPercent");
+      } else {
+        creatorLpPercent = await timeout(
+          getCreatorLpPercent(connection, new PublicKey(event.raydiumLpMint), new PublicKey(event.creator)),
+          "creator LP %"
+        );
+      }
+    } catch (err: any) {
+      warnings.push(`creatorLpPercent: ${err?.message || err}`);
+    }
+  }
+  // Pump.fun pre-migration: no separate LP token exists, and the bonding curve's own program
+  // logic makes the liquidity structurally un-rug-pullable by the creator - lpCheckApplicable
+  // stays false and creatorLpPercent stays null, which the filter engine treats as "N/A", not
+  // "unknown/fail" (see TokenMetrics.lpCheckApplicable).
 
   let liquiditySol: number | null = null;
   try {
@@ -304,6 +381,9 @@ export async function collectTokenMetrics(
     devWalletPercent,
     mintAuthorityRenounced,
     freezeAuthorityRenounced,
+    riskyTokenExtensions,
+    creatorLpPercent,
+    lpCheckApplicable,
     uniqueWallets,
     transactionCount,
     stale,

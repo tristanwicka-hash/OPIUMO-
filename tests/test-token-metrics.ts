@@ -10,11 +10,12 @@
  * Parts 1-2's live smoke tests.
  */
 import { Keypair, PublicKey, Connection } from "@solana/web3.js";
-import { MintLayout, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
+import { MintLayout, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ACCOUNT_SIZE, ExtensionType } from "@solana/spl-token";
 import {
   getRenounceStatus,
   getTopHolderPercent,
   getWalletMintPercent,
+  getCreatorLpPercent,
   getPumpFunLiquiditySol,
   getRaydiumLiquiditySol,
   getWalletActivity,
@@ -120,6 +121,72 @@ async function main() {
     const status = await getRenounceStatus(conn, Keypair.generate().publicKey);
     check("Token-2022 mint is decoded correctly (not treated as a fetch failure)", status.mintAuthorityRenounced && status.freezeAuthorityRenounced);
     check("Token-2022 supply decoded correctly", status.supplyRaw === 500_000_000n);
+    check("plain Token-2022 mint with no extensions reports no risky extensions", status.riskyTokenExtensions.length === 0);
+  }
+  {
+    // A classic (non-Token-2022) mint can never carry these extensions - riskyTokenExtensions
+    // should just be an empty array, not attempt to parse anything.
+    const conn = mockConnection({
+      getAccountInfo: async () => ({
+        data: encodeMint({ mintAuthority: null, freezeAuthority: null, supply: 1_000_000n, decimals: 6 }),
+        owner: TOKEN_PROGRAM_ID,
+        executable: false,
+        lamports: 1,
+      }),
+    });
+    const status = await getRenounceStatus(conn, Keypair.generate().publicKey);
+    check("classic SPL Token mint never reports risky extensions", status.riskyTokenExtensions.length === 0);
+  }
+  {
+    // A Token-2022 mint that DOES carry a honeypot-relevant extension (PermanentDelegate) -
+    // build a real extended-mint account buffer (base mint + padding to ACCOUNT_SIZE +
+    // AccountType.Mint marker + TLV extension entry) rather than mocking the parser.
+    const base = encodeMint({ mintAuthority: null, freezeAuthority: null, supply: 1_000_000n, decimals: 6 });
+    const padded = Buffer.alloc(ACCOUNT_SIZE, 0);
+    base.copy(padded, 0);
+    const accountTypeMint = Buffer.from([1]); // AccountType.Mint
+    const tlvType = Buffer.alloc(2);
+    tlvType.writeUInt16LE(ExtensionType.PermanentDelegate, 0);
+    const tlvLength = Buffer.alloc(2);
+    tlvLength.writeUInt16LE(32, 0); // PermanentDelegate stores a 32-byte pubkey
+    const tlvPayload = Buffer.alloc(32, 0);
+    const data = Buffer.concat([padded, accountTypeMint, tlvType, tlvLength, tlvPayload]);
+
+    const conn = mockConnection({
+      getAccountInfo: async () => ({ data, owner: TOKEN_2022_PROGRAM_ID, executable: false, lamports: 1 }),
+    });
+    const status = await getRenounceStatus(conn, Keypair.generate().publicKey);
+    check("Token-2022 mint WITH a PermanentDelegate extension is flagged", status.riskyTokenExtensions.length === 1);
+    check("the flagged reason names PermanentDelegate", status.riskyTokenExtensions[0].includes("PermanentDelegate"));
+  }
+
+  console.log("\n-- creator LP % (Raydium LP lock/burn check) --");
+  {
+    const creator = Keypair.generate().publicKey;
+    const lpMint = Keypair.generate().publicKey;
+    const conn = mockConnection({
+      getAccountInfo: async () => ({
+        data: encodeMint({ mintAuthority: null, freezeAuthority: null, supply: 1_000_000n, decimals: 6 }),
+        owner: TOKEN_PROGRAM_ID,
+        executable: false,
+        lamports: 1,
+      }),
+      getParsedTokenAccountsByOwner: async () => ({
+        value: [{ account: { data: { parsed: { info: { tokenAmount: { amount: "10000" } } } } } }], // 1% of supply
+      }),
+    });
+    const pct = await getCreatorLpPercent(conn, lpMint, creator);
+    check("creator LP % computed correctly (1%)", pct !== null && Math.abs(pct - 1) < 0.01);
+  }
+  {
+    // LP mint account fetch fails -> null, not a throw (same fail-safe pattern as everything else).
+    const conn = mockConnection({
+      getAccountInfo: async () => {
+        throw new Error("boom");
+      },
+    });
+    const pct = await getCreatorLpPercent(conn, Keypair.generate().publicKey, Keypair.generate().publicKey);
+    check("getCreatorLpPercent returns null (not a throw) when the LP mint can't be fetched", pct === null);
   }
 
   console.log("\n-- top holder % (excluding pool) --");
@@ -236,6 +303,38 @@ async function main() {
       "collectTokenMetrics reports renounce status as null/'unknown' on error, NOT false ('confirmed not renounced')",
       !!metrics && metrics.mintAuthorityRenounced === null && metrics.freezeAuthorityRenounced === null
     );
+    check("riskyTokenExtensions is null (unknown), not an empty array (clean), when the fetch fails", !!metrics && metrics.riskyTokenExtensions === null);
+    check("a pumpfun event never runs the LP check (lpCheckApplicable=false, creatorLpPercent stays null as N/A)", !!metrics && metrics.lpCheckApplicable === false && metrics.creatorLpPercent === null);
+  }
+  {
+    // A raydium event WITH an lpMint/creator captured - lpCheckApplicable must be true and
+    // creatorLpPercent should actually get computed (not stay null as "N/A").
+    const creator = Keypair.generate().publicKey;
+    const conn = mockConnection({
+      getAccountInfo: async () => ({
+        data: encodeMint({ mintAuthority: null, freezeAuthority: null, supply: 1_000_000n, decimals: 6 }),
+        owner: TOKEN_PROGRAM_ID,
+        executable: false,
+        lamports: 1,
+      }),
+      getParsedTokenAccountsByOwner: async () => ({
+        value: [{ account: { data: { parsed: { info: { tokenAmount: { amount: "0" } } } } } }], // fully burned/locked
+      }),
+    });
+    const event: NewPoolEvent = {
+      source: "raydium",
+      signature: "sig-raydium",
+      slot: 1,
+      mint: Keypair.generate().publicKey.toBase58(),
+      poolAddress: Keypair.generate().publicKey.toBase58(),
+      creator: creator.toBase58(),
+      raydiumLpMint: Keypair.generate().publicKey.toBase58(),
+      raydiumPcMint: WSOL_MINT,
+      detectedAt: new Date().toISOString(),
+    };
+    const metrics = await collectTokenMetrics(conn, event);
+    check("raydium event runs the LP check (lpCheckApplicable=true)", metrics.lpCheckApplicable === true);
+    check("creatorLpPercent is actually computed for a raydium event, not left null", metrics.creatorLpPercent === 0);
   }
 
   console.log("\n-- withTimeout --");

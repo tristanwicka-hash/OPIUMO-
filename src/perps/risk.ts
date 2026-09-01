@@ -1,4 +1,5 @@
 import { PerpsConfig } from "../config";
+import { computePositionSizeForRisk as computePositionSizeForRiskShared } from "../util/riskSizing";
 import { PerpOrderRequest, RiskCheckResult } from "./types";
 
 /**
@@ -106,7 +107,8 @@ export function computeTakeProfitPrice(entryPrice: number, takeProfitPercent: nu
  * `riskPercentOfAccount` of `accountValueUsd`. Classic fixed-fractional risk
  * sizing - returns the notional (exposure) size in USD, independent of leverage
  * (leverage only changes how much margin that notional ties up, not the $ loss
- * at the stop).
+ * at the stop). Shared with the spot sniper's position sizing (src/trading/sizing.ts) -
+ * see src/util/riskSizing.ts for the actual (currency-agnostic) implementation.
  */
 export function computePositionSizeForRisk(
   accountValueUsd: number,
@@ -114,13 +116,5 @@ export function computePositionSizeForRisk(
   entryPrice: number,
   stopLossPrice: number
 ): number {
-  if (accountValueUsd <= 0) throw new Error("accountValueUsd must be > 0");
-  if (riskPercentOfAccount <= 0) throw new Error("riskPercentOfAccount must be > 0");
-  if (entryPrice <= 0) throw new Error("entryPrice must be > 0");
-
-  const priceMoveFraction = Math.abs(entryPrice - stopLossPrice) / entryPrice;
-  if (priceMoveFraction === 0) throw new Error("stopLossPrice cannot equal entryPrice");
-
-  const maxLossUsd = accountValueUsd * (riskPercentOfAccount / 100);
-  return maxLossUsd / priceMoveFraction;
+  return computePositionSizeForRiskShared(accountValueUsd, riskPercentOfAccount, entryPrice, stopLossPrice);
 }

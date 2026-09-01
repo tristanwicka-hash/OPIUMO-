@@ -59,6 +59,7 @@ export function extractRaydiumNewPool(
     const ammIdPk = accounts[idx.ammId];
     const coinMintPk = accounts[idx.coinMint];
     const pcMintPk = accounts[idx.pcMint];
+    const lpMintPk = accounts[idx.lpMint];
     const userWalletPk = accounts[idx.userWallet];
     const coinVaultPk = accounts[idx.poolCoinTokenAccount];
     const pcVaultPk = accounts[idx.poolPcTokenAccount];
@@ -74,6 +75,7 @@ export function extractRaydiumNewPool(
       raydiumCoinVault: coinVaultPk?.toBase58(),
       raydiumPcVault: pcVaultPk?.toBase58(),
       raydiumPcMint: pcMintPk?.toBase58(),
+      raydiumLpMint: lpMintPk?.toBase58(),
       detectedAt: new Date().toISOString(),
     };
   }

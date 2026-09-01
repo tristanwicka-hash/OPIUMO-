@@ -17,5 +17,7 @@ export interface NewPoolEvent {
   raydiumPcVault?: string;
   /** Raydium-only: the quote-side mint (often WSOL, sometimes USDC). */
   raydiumPcMint?: string;
+  /** Raydium-only: the pool's LP token mint - used to check whether LP tokens are locked/burned. */
+  raydiumLpMint?: string;
   detectedAt: string;
 }

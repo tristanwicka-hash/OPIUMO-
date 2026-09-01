@@ -49,6 +49,9 @@ function goodMetrics(overrides: Partial<TokenMetrics> = {}): TokenMetrics {
     devWalletPercent: 5,
     mintAuthorityRenounced: true,
     freezeAuthorityRenounced: true,
+    riskyTokenExtensions: [],
+    creatorLpPercent: 0,
+    lpCheckApplicable: true,
     stale: false,
     uniqueWallets: 40,
     transactionCount: 60,
@@ -121,6 +124,36 @@ async function main() {
         !r.reasons.some((x) => x.includes("mint authority not renounced")) &&
         !r.reasons.some((x) => x.includes("freeze authority not renounced"))
     );
+  }
+  {
+    const r = evaluateFilters(event, goodMetrics({ riskyTokenExtensions: ["TransferHook (can arbitrarily block/tax transfers)"] }), filters);
+    check("risky Token-2022 extension present -> SKIP", r.decision === "SKIP");
+    check("reason names the extension", r.reasons.some((x) => x.includes("TransferHook")));
+  }
+  {
+    const r = evaluateFilters(event, goodMetrics({ riskyTokenExtensions: null }), filters);
+    check("unknown token extensions -> SKIP (fails closed)", r.decision === "SKIP");
+    check("reason says 'unknown'", r.reasons.some((x) => x.includes("token extensions unknown")));
+  }
+  {
+    const r = evaluateFilters(event, goodMetrics({ riskyTokenExtensions: [] }), filters);
+    check("empty risky-extensions list -> does not fail this rule", !r.reasons.some((x) => x.includes("extension")));
+  }
+  {
+    const r = evaluateFilters(event, goodMetrics({ lpCheckApplicable: true, creatorLpPercent: filters.maxCreatorLpPercent + 5 }), filters);
+    check("creator still holds too much LP -> SKIP", r.decision === "SKIP");
+    check("reason mentions LP", r.reasons.some((x) => x.includes("LP supply")));
+  }
+  {
+    const r = evaluateFilters(event, goodMetrics({ lpCheckApplicable: true, creatorLpPercent: null }), filters);
+    check("LP check applicable but unknown -> SKIP (fails closed)", r.decision === "SKIP");
+    check("reason says 'unknown'", r.reasons.some((x) => x.includes("creator LP % unknown")));
+  }
+  {
+    // Pump.fun: lpCheckApplicable=false, creatorLpPercent=null - this must NOT be treated as
+    // "unknown/fail", it means the check doesn't apply to this token type at all.
+    const r = evaluateFilters(event, goodMetrics({ lpCheckApplicable: false, creatorLpPercent: null }), filters);
+    check("LP check not applicable (e.g. Pump.fun) -> PASSes this rule, null isn't treated as unknown here", r.decision === "PASS");
   }
   {
     const r = evaluateFilters(event, goodMetrics({ uniqueWallets: filters.minUniqueWallets - 1 }), filters);

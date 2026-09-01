@@ -2,15 +2,21 @@
   "_comment": "All tunables live here so you never have to touch source code. Edit, save, restart the bot.",
 
   "trading": {
-    "_comment": "Master switch. MUST be flipped to true by hand once you have verified the filter logic yourself. See NON-NEGOTIABLES in README.md.",
+    "_comment": "Master switch. MUST be flipped to true by hand once you have verified the filter logic yourself. See NON-NEGOTIABLES in README.md. Position sizing is risk-based (from stop-loss distance), not a flat SOL amount - set totalCapitalSol to your real trading bankroll. riskPercentPerTrade is your dial (0.5-1% per the strategy spec); there is ALSO a non-overridable hard cap (1% of capital) enforced in src/trading/sizing.ts that no config value can loosen - in practice that hard cap is what actually sizes most trades, see the comment there.",
     "enabled": false,
-    "positionSizeSol": 0.1,
-    "maxSlippageBps": 100,
+    "totalCapitalSol": 10,
+    "riskPercentPerTrade": 0.75,
+    "maxSlippageBps": 300,
     "takeProfitLadder": [
       { "atMultipleOfEntry": 2, "sellPercentOfRemaining": 50 },
-      { "atMultipleOfEntry": 4, "sellPercentOfRemaining": 80 }
+      { "atMultipleOfEntry": 5, "sellPercentOfRemaining": 25 },
+      { "atMultipleOfEntry": 10, "sellPercentOfRemaining": 25 }
     ],
-    "stopLossPercent": -30,
+    "atrPeriod": 14,
+    "atrStopMultiplier": 1.75,
+    "trailingStopActivateMultiple": 2,
+    "trailingStopPercent": 30,
+    "timeStopHours": 48,
     "priceCheckIntervalMs": 5000
   },
 
@@ -23,7 +29,9 @@
     "requireFreezeAuthorityRenounced": true,
     "minUniqueWallets": 20,
     "minTransactionCount": 30,
-    "minUniqueWalletToTxRatio": 0.15
+    "minUniqueWalletToTxRatio": 0.15,
+    "rejectRiskyTokenExtensions": true,
+    "maxCreatorLpPercent": 1
   },
 
   "sources": {

@@ -18,6 +18,7 @@ const suites = [
   { name: "Perps Drift connection (live)", script: "tests/test-perps-connection.ts" },
   { name: "Funding-arb signals (offline)", script: "tests/test-funding-arb-signals.ts" },
   { name: "Funding-arb live cycle", script: "tests/test-funding-arb-live.ts" },
+  { name: "Spot sniper sizing/ATR/exit logic (offline)", script: "tests/test-trading-signals.ts" },
 ];
 
 let anyFailed = false;
