@@ -75,9 +75,84 @@ up yourself once archived. Covered by `npm run test:logger` (5/5 pass).
 | 5 | Auto-buy via Jupiter | ⏳ | gated by `trading.enabled` |
 | 6 | Auto-sell TP/SL ladder | ⏳ | gated by `trading.enabled` |
 | 7 | Trade logging (entry/exit/P&L) | ⏳ | |
+| 8 | **Perps trading (Drift Protocol)** - plumbing only, no strategy | ✅ built + risk engine fully unit-tested offline | `npm run test:perps-risk`, `npm run test:perps-connection` |
 
 Each part has its own `npm run test:<part>` script - run it and read the
 console output before trusting that part.
+
+### Part 8: perpetuals trading (Drift Protocol) - plumbing, not a strategy
+
+This is a separate track from the spot sniper above (Parts 1-7) - same repo,
+same wallet/config conventions, but trading leveraged perps on
+[Drift Protocol](https://drift.trade) instead of spot Pump.fun/Raydium
+tokens. **There is no entry strategy wired up.** Nothing decides *when* to
+trade - what's here is the execution plumbing something else (you, manually;
+an indicator-based strategy; a copy-trading bot) would call. Do not treat
+this as "the bot trades perps now" - it's "the bot *can* place a perp trade,
+correctly and with risk limits enforced, once something tells it to."
+
+**Extra non-negotiable on top of the ones at the top of this file:** perps
+use leverage. A bad order loses money faster than spot ever can, and can get
+liquidated entirely. `perps.enabled` defaults `false` (mirrors
+`trading.enabled`) **and** `perps.env` defaults `"devnet"` - Solana's free
+test network, where SOL has no real value. Do not switch `perps.env` to
+`"mainnet-beta"` until you've tested on devnet and read `src/perps/risk.ts`
+end to end. If you do set `enabled: true` and `env: "mainnet-beta"`
+together, the bot prints a loud warning on startup on purpose.
+
+What's built:
+
+- **`src/perps/driftClient.ts`** - connects to Drift (mirrors Part 1's RPC
+  connection). `confirmDriftConnection()` subscribes and reads back account
+  state. **Found and fixed a real crash bug here**: Drift's SDK runs
+  background account-subscription tasks that can throw *outside* any
+  promise our code awaits - by default Node's response to that is to kill
+  the entire process, silently bypassing our try/catch. Reproduced it
+  (a background subscriber hit this sandbox's blocked network and took the
+  whole process down with a raw stack trace, no error handling triggered at
+  all), fixed it with a scoped `unhandledRejection` handler that logs
+  instead of crashing, verified the fix by reproducing the same scenario
+  again and confirming it now fails gracefully through our own error
+  path instead.
+- **`src/perps/positions.ts`** - reads live account state (collateral,
+  leverage, margin health, open positions, unrealized P&L) using Drift's
+  own SDK calculations (`User.getHealth()`/`getLeverage()`/etc), not
+  hand-rolled math - your real account health depends on your *whole*
+  account across every position, which isn't something worth
+  re-deriving by hand.
+- **`src/perps/risk.ts`** - the risk gate, same PASS/SKIP-with-reasons
+  design as the spot filter engine (Part 4): every order is checked against
+  `perps.allowedMarkets`, `maxLeverage`, `maxPositionSizeUsd`,
+  `maxOpenPositions`, and (if `requireStopLoss`) that a stop-loss is set,
+  before anything touches the chain. Also has stop-loss/take-profit price
+  target math and a **rough, clearly-labeled-as-an-estimate** liquidation
+  price calculator for pre-trade display - always cross-check the real
+  number in Drift's own UI, this ignores cross-margin effects from your
+  other positions.
+- **`src/perps/orders.ts`** - `openPerpPosition()` (market order + attaches
+  a reduce-only stop-loss and, if set, take-profit trigger order) and
+  `closePerpPosition()`. Refuses to do anything unless `perps.enabled` is
+  true and the order clears the risk gate.
+- **`src/perps/tradeLog.ts`** - JSONL log to `logs/perps-trades.jsonl`
+  (entry, exit, reason, P&L, rejected orders + why), same rotation as the
+  spot decision log.
+- **`src/perps/marketRegistry.ts` / `sizing.ts`** - symbol↔market-index
+  lookup and USD↔on-chain-precision conversions. Pure, offline-testable
+  (Drift's `initialize()` just returns bundled static market metadata, no
+  network call).
+
+```bash
+npm run test:perps-risk        # 31/31 offline - risk gate, sizing, SL/TP math
+npm run test:perps-connection  # needs your own RPC + a wallet in .env, even on devnet
+```
+
+**Not built, and deliberately so** (you told me to build the plumbing, not
+guess at a strategy): any signal for *when* to open a position - no
+technical indicators, no manual-trigger CLI, no copy-trading. Also not
+built: a live price-monitoring loop to react to a stop-loss/take-profit
+actually filling (the trigger orders are placed on-chain and Drift itself
+executes them - you don't need a bot running for that part - but nothing
+here watches for the fill and logs the close automatically yet).
 
 ### Part 1: RPC connection
 

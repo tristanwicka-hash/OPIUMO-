@@ -42,6 +42,22 @@
     "logDir": "logs",
     "decisionsFile": "logs/decisions.jsonl",
     "tradesFile": "logs/trades.jsonl",
+    "perpsTradesFile": "logs/perps-trades.jsonl",
     "maxLogFileSizeMB": 20
+  },
+
+  "perps": {
+    "_comment": "Perpetuals trading via Drift Protocol. PLUMBING ONLY - there is no entry strategy wired up yet (see README). Leverage means you can lose your whole position fast, faster than spot - keep enabled=false and env=devnet until you've read the risk engine's tests and tried it with fake devnet funds first.",
+    "enabled": false,
+    "env": "devnet",
+    "subAccountId": 0,
+    "allowedMarkets": ["SOL-PERP"],
+    "maxLeverage": 3,
+    "maxPositionSizeUsd": 100,
+    "maxOpenPositions": 1,
+    "requireStopLoss": true,
+    "defaultStopLossPercent": -10,
+    "defaultTakeProfitPercent": 20,
+    "orderTimeoutMs": 15000
   }
 }

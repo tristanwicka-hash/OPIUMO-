@@ -52,7 +52,25 @@ export interface LoggingConfig {
   logDir: string;
   decisionsFile: string;
   tradesFile: string;
+  perpsTradesFile: string;
   maxLogFileSizeMB: number;
+}
+
+export interface PerpsConfig {
+  /** Master switch - mirrors trading.enabled. No order is ever placed while this is false. */
+  enabled: boolean;
+  /** 'devnet' (fake funds, safe to break) or 'mainnet-beta' (real money). Defaults to devnet on purpose. */
+  env: "devnet" | "mainnet-beta";
+  subAccountId: number;
+  /** Only these market symbols (e.g. "SOL-PERP") may be traded - anything else is rejected. */
+  allowedMarkets: string[];
+  maxLeverage: number;
+  maxPositionSizeUsd: number;
+  maxOpenPositions: number;
+  requireStopLoss: boolean;
+  defaultStopLossPercent: number;
+  defaultTakeProfitPercent: number;
+  orderTimeoutMs: number;
 }
 
 export interface AppConfig {
@@ -61,6 +79,7 @@ export interface AppConfig {
   sources: SourcesConfig;
   polling: PollingConfig;
   logging: LoggingConfig;
+  perps: PerpsConfig;
   rpcUrl: string;
   wsUrl?: string;
   walletPrivateKey?: string;
@@ -98,6 +117,27 @@ function validate(config: AppConfig): void {
   }
   if (config.filters.minUniqueWalletToTxRatio < 0 || config.filters.minUniqueWalletToTxRatio > 1) {
     errors.push("filters.minUniqueWalletToTxRatio must be between 0 and 1");
+  }
+
+  if (config.perps.enabled && !config.walletPrivateKey) {
+    errors.push("perps.enabled is true but WALLET_PRIVATE_KEY is not set in .env");
+  }
+  if (config.perps.maxLeverage <= 0) errors.push("perps.maxLeverage must be > 0");
+  if (config.perps.maxPositionSizeUsd <= 0) errors.push("perps.maxPositionSizeUsd must be > 0");
+  if (config.perps.maxOpenPositions <= 0) errors.push("perps.maxOpenPositions must be > 0");
+  if (config.perps.requireStopLoss && config.perps.defaultStopLossPercent >= 0) {
+    errors.push("perps.defaultStopLossPercent must be negative (e.g. -10) when requireStopLoss is true");
+  }
+  if (config.perps.allowedMarkets.length === 0) {
+    errors.push("perps.allowedMarkets must list at least one market symbol (e.g. \"SOL-PERP\")");
+  }
+  if (config.perps.enabled && config.perps.env === "mainnet-beta") {
+    // Not a hard error (you may genuinely mean to run on mainnet), but this is exactly the
+    // kind of thing that should make you stop and double check, so it's surfaced loudly.
+    console.warn(
+      "\n*** WARNING: perps.enabled=true AND perps.env=mainnet-beta - this bot will place REAL leveraged " +
+        "orders with REAL money on your next perps order. If that isn't deliberate, stop and fix config/default.json now. ***\n"
+    );
   }
 
   if (errors.length > 0) {

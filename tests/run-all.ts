@@ -14,6 +14,8 @@ const suites = [
   { name: "Token metrics (Part 3)", script: "tests/test-token-metrics.ts" },
   { name: "Filter engine (Part 4)", script: "tests/test-filters.ts" },
   { name: "Log rotation (util)", script: "tests/test-logger.ts" },
+  { name: "Perps risk engine (offline)", script: "tests/test-perps-risk.ts" },
+  { name: "Perps Drift connection (live)", script: "tests/test-perps-connection.ts" },
 ];
 
 let anyFailed = false;
