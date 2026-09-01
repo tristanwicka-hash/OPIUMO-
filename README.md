@@ -85,9 +85,9 @@ returned just `"?"` instead of `"?" + suffix` - the suffix was dropped on the
 null branch. Caught by the very test written to cover the new code, before
 it shipped.
 
-Two other real gaps from that review were **not** touched here, both
-because the honest fix is bigger than a "fix it" pass and deserves its own
-design, not a rushed addition:
+One other real gap from that review was **not** touched here, because the
+honest fix is bigger than a "fix it" pass and deserves its own design, not
+a rushed addition:
 - **No paper-trading mode.** The only two states today are "log decisions,
   never trade" (`trading.enabled=false`) and "trade with real SOL/leverage."
   There's no middle ground that runs the full pipeline - real prices, real
@@ -95,22 +95,22 @@ design, not a rushed addition:
   value thing to build next; it's how you'd validate the exit ladder/
   trailing-stop/ATR-stop logic (which has never executed against live data)
   without risking anything.
-- **The Raydium `initialize2` account indices are still unverified against
-  a real transaction** - flagged since the very first hardening pass, still
-  needs your own RPC access to confirm, still not something fixable from
-  this sandbox. To make that check as low-effort as possible:
-  `npm run verify:raydium-tx -- <signature>` (`scripts/verify-raydium-tx.ts`)
-  decodes one real `initialize2` transaction and prints its account list
-  next to what this bot currently assumes each index means - grab a
-  signature from Solscan, run the one command, compare against what
-  Solscan's own page shows for that tx. That's the whole check.
+
+**The Raydium `initialize2` account indices, flagged as unverified since
+the first hardening pass, are now confirmed** (2026-09-01) against
+Raydium's own official program source (`raydium-io/raydium-amm`,
+`program/src/instruction.rs`) - every index this bot assumes
+(amm/authority/lpMint/coinMint/pcMint/vaults/userWallet) matches the real
+account order the on-chain program expects. `npm run verify:raydium-tx --
+<signature>` (`scripts/verify-raydium-tx.ts`) still exists if you ever want
+to spot-check a specific live transaction, but it's no longer a blocker.
 
 ## Status
 
 | # | Part | Status | Notes |
 |---|------|--------|-------|
 | 1 | Solana RPC connection | ✅ built, ⚠️ needs your own live RPC to verify | `npm run test:rpc` |
-| 2 | New pool watcher (Pump.fun/Raydium) | ✅ built, ⚠️ account indices need live verification | `npm run test:watcher` |
+| 2 | New pool watcher (Pump.fun/Raydium) | ✅ built, Raydium indices confirmed against official source | `npm run test:watcher` |
 | 3 | Token metrics (holders, liquidity, dev %, renounced, wallets/volume) | ✅ built + fully unit-tested offline | `npm run test:metrics` |
 | 4 | Filter engine + PASS/SKIP logging (no buying) | ✅ built + fully unit-tested offline | `npm run test:filters` |
 | 5-7 | **Meme-coin snipe/scalp strategy**: auto-buy (Jupiter), ATR stop / tiered take-profit / trailing stop / time-stop, trade logging | ✅ built + decision logic fully unit-tested offline | `npm run test:trading-signals`, `test:trading-engine-gating`, `test:trading-live` |

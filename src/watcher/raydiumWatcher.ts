@@ -3,16 +3,16 @@ import { NewPoolEvent } from "./types";
 import { RAYDIUM_AMM_V4_PROGRAM_ID, RAYDIUM_INITIALIZE2_LOG_MARKER } from "./programs";
 
 /**
- * Account order for Raydium AMM V4's `initialize2` instruction, per the
- * Raydium SDK's `makeAMMCreatePoolV2Instruction` account list. UNLIKE the
- * Pump.fun indices, this one has drifted across Raydium SDK versions in the
- * wild (extra accounts get inserted depending on which build created the
- * pool) - treat these indices as a starting point, not gospel.
+ * Account order for Raydium AMM V4's `initialize2` instruction.
  *
- * Could not be verified live from this sandbox (no RPC egress here). Before
- * trusting this in production: grab a handful of recent `initialize2`
- * signatures from Solscan, decode them, and confirm coinMint/pcMint/userWallet
- * land where expected - then update the indices below if not.
+ * Verified 2026-09-01 against the official Raydium program source
+ * (raydium-io/raydium-amm, program/src/instruction.rs, the `initialize2`
+ * account list) - every index below (amm/authority/lpMint/coinMint/pcMint/
+ * vaults/userWallet) matches the account order the real on-chain program
+ * expects. If Raydium ships a new pool-creation instruction version in the
+ * future, re-check this list against the then-current source before
+ * trusting it - these indices are pinned to the account layout as of the
+ * verification date above, not guaranteed forever.
  */
 export const RAYDIUM_INITIALIZE2_ACCOUNT_INDEX = {
   ammId: 4,
