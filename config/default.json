@@ -26,7 +26,10 @@
     "trailingStopActivateMultiple": 2,
     "trailingStopPercent": 30,
     "timeStopHours": 48,
-    "priceCheckIntervalMs": 5000
+    "priceCheckIntervalMs": 5000,
+    "maxConsecutiveSellFailures": 5,
+    "sellFailureBackoffBaseMs": 30000,
+    "sellFailureBackoffMaxMs": 1800000
   },
 
   "filters": {

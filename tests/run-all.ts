@@ -20,6 +20,9 @@ const suites = [
   { name: "Funding-arb live cycle", script: "tests/test-funding-arb-live.ts" },
   { name: "Spot sniper sizing/ATR/exit logic (offline)", script: "tests/test-trading-signals.ts" },
   { name: "Spot sniper engine gates (offline)", script: "tests/test-trading-engine-gating.ts" },
+  { name: "Spot sniper sell-failure retry/backoff (offline)", script: "tests/test-trading-retry.ts" },
+  { name: "Spot sniper position reconciliation (offline)", script: "tests/test-trading-reconciliation.ts" },
+  { name: "Spot sniper human-unit conversions (offline)", script: "tests/test-trading-human-units.ts" },
   { name: "Spot sniper Jupiter quote (live)", script: "tests/test-trading-live.ts" },
 ];
 

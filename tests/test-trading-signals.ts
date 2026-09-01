@@ -34,6 +34,7 @@ function check(name: string, condition: boolean) {
 function goodPosition(overrides: Partial<SpotPosition> = {}): SpotPosition {
   return {
     mint: "Mint111111111111111111111111111111111111111",
+    decimals: 6,
     entryPriceSol: 0.001,
     entrySizeTokens: 100_000,
     remainingSizeTokens: 100_000,
@@ -41,6 +42,9 @@ function goodPosition(overrides: Partial<SpotPosition> = {}): SpotPosition {
     highestPriceSol: 0.001,
     executedLadderTiers: [],
     stopLossPriceSol: 0.0008,
+    sellFailureCount: 0,
+    lastSellFailureAt: null,
+    abandoned: false,
     ...overrides,
   };
 }

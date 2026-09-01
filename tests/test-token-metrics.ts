@@ -335,6 +335,7 @@ async function main() {
     const metrics = await collectTokenMetrics(conn, event);
     check("raydium event runs the LP check (lpCheckApplicable=true)", metrics.lpCheckApplicable === true);
     check("creatorLpPercent is actually computed for a raydium event, not left null", metrics.creatorLpPercent === 0);
+    check("decimals flows through collectTokenMetrics end-to-end", metrics.decimals === 6);
   }
 
   console.log("\n-- withTimeout --");

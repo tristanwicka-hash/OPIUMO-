@@ -3,6 +3,8 @@ import path from "path";
 
 export interface SpotPosition {
   mint: string;
+  /** Raw decimals from the mint account - null if it couldn't be fetched at buy time. Display-only: used to convert raw token amounts/prices to human-readable ones in logs, never in the exit-logic math itself (which stays in raw units throughout, see the UNIT CONVENTION note in src/trading/engine.ts). */
+  decimals: number | null;
   entryPriceSol: number;
   entrySizeTokens: number;
   /** Decreases as ladder tiers sell off portions of the position. Position is closed once this hits 0. */
@@ -14,6 +16,12 @@ export interface SpotPosition {
   executedLadderTiers: number[];
   /** ATR-based, computed once at entry from that moment's ATR reading - fixed, NOT itself trailing (the trailing stop is a separate, later-activating mechanism). */
   stopLossPriceSol: number;
+  /** Consecutive failed sell attempts for this position. Reset to 0 on any successful sell. Drives backoff + eventual abandonment - see src/trading/retry.ts. */
+  sellFailureCount: number;
+  /** When the most recent sell failure happened, or null if there hasn't been one (or it was reset by a success). */
+  lastSellFailureAt: number | null;
+  /** True once sellFailureCount has crossed trading.maxConsecutiveSellFailures - no further automatic sell attempts are made; needs manual review. */
+  abandoned: boolean;
 }
 
 /**
@@ -53,6 +61,11 @@ export class PositionStore {
 
   getAllOpen(): SpotPosition[] {
     return Object.values(this.readAll());
+  }
+
+  /** Positions no longer being actively managed (too many consecutive sell failures) - needs your manual review. */
+  getAbandoned(): SpotPosition[] {
+    return this.getAllOpen().filter((p) => p.abandoned);
   }
 
   save(position: SpotPosition) {

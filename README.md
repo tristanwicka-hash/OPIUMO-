@@ -64,6 +64,42 @@ other JSONL log) to a timestamped file once it crosses
 grows one unbounded file. Rotated files are never auto-deleted - clean them
 up yourself once archived. Covered by `npm run test:logger` (5/5 pass).
 
+## Third hardening pass (2026-09-01) - after both strategies were built
+
+Once the funding-arb and meme-coin strategies were both live-executable
+(real Jupiter/Drift order placement, not just plumbing), a fresh "what's
+actually missing before you'd trust this" review turned up two real bugs,
+two real gaps, and - while chasing one of those down - a **third bug that
+had been there since commit #1 and nothing had ever caught**:
+
+| Issue | Fix |
+|---|---|
+| A failed sell (rugged token, zero liquidity, RPC hiccup) retried on **every single monitoring cycle forever**, no backoff, no way to ever stop - on a genuinely dead token that meant hammering Jupiter indefinitely | `src/trading/retry.ts`: exponential backoff (`sellFailureBackoffBaseMs`, doubling per failure, capped at `sellFailureBackoffMaxMs`); after `maxConsecutiveSellFailures` (default 5) the position is marked `abandoned` - no more automatic attempts, logged loudly, needs your manual review |
+| `FundingArbStrategy` (Part 9) was fully built and tested but had **no way to actually run** - only a test ever instantiated it, and that test runs one cycle and exits | `src/perpsIndex.ts` - a real entry point (`npm run perps` / `npm run start:perps`), separate from the spot sniper's `src/index.ts`, connects once then calls `strategy.start()` to run on its own schedule until stopped |
+| Nothing ever checked the position store against the wallet's actual on-chain balance - a missed sell confirmation (e.g. the process dying between broadcast and recording) would leave `remainingSizeTokens` silently wrong forever | `SpotTradingEngine.reconcilePosition()` compares tracked vs. real balance every cycle: corrects downward, removes the position if the wallet holds none of it, warns (never silently trusts) if the wallet holds *more* than tracked |
+| Trade logs recorded price/size per **raw token unit** only - internally correct (see the UNIT CONVENTION note in `src/trading/engine.ts`) but not human-readable (e.g. `1.2e-15` instead of `0.0000012`) | `decimals` now flows through `collectTokenMetrics()` → `SpotPosition` → `src/trading/humanUnits.ts`, added to every buy/sell log line alongside the raw values, never used in the actual trading math |
+| **`npm start` (`node dist/index.js`) has been broken since the very first commit.** `tsconfig.json`'s `rootDir: "."` (needed so `tests/` can import `../src/...`) means the real build output is `dist/src/index.js`, not `dist/index.js` - and separately, `config.ts` resolved `config/default.json` via `__dirname`, which pointed at the wrong depth once compiled AND `config/` is never copied into `dist/` at all. Never caught because every test in this repo runs via `ts-node` against source, never through a real build. | Fixed both: `package.json`'s `main`/`start`/`start:perps` now point at `dist/src/...`; `config.ts` resolves against `process.cwd()` instead of `__dirname`, matching the convention every other file path in this repo already uses (`logs/*.json(l)`). Verified end-to-end: `npm run build && npm start` now runs correctly. |
+
+Also found and fixed while writing the human-units test: `formatHuman(null, suffix)`
+returned just `"?"` instead of `"?" + suffix` - the suffix was dropped on the
+null branch. Caught by the very test written to cover the new code, before
+it shipped.
+
+Two other real gaps from that review were **not** touched here, both
+because the honest fix is bigger than a "fix it" pass and deserves its own
+design, not a rushed addition:
+- **No paper-trading mode.** The only two states today are "log decisions,
+  never trade" (`trading.enabled=false`) and "trade with real SOL/leverage."
+  There's no middle ground that runs the full pipeline - real prices, real
+  sizing, real exit logic - against simulated fills. This is the highest-
+  value thing to build next; it's how you'd validate the exit ladder/
+  trailing-stop/ATR-stop logic (which has never executed against live data)
+  without risking anything.
+- **The Raydium `initialize2` account indices are still unverified against
+  a real transaction** - flagged since the very first hardening pass, still
+  needs your own RPC access to confirm, still not something fixable from
+  this sandbox.
+
 ## Status
 
 | # | Part | Status | Notes |
@@ -74,7 +110,7 @@ up yourself once archived. Covered by `npm run test:logger` (5/5 pass).
 | 4 | Filter engine + PASS/SKIP logging (no buying) | ✅ built + fully unit-tested offline | `npm run test:filters` |
 | 5-7 | **Meme-coin snipe/scalp strategy**: auto-buy (Jupiter), ATR stop / tiered take-profit / trailing stop / time-stop, trade logging | ✅ built + decision logic fully unit-tested offline | `npm run test:trading-signals`, `test:trading-engine-gating`, `test:trading-live` |
 | 8 | **Perps trading (Drift Protocol)** - plumbing only, no strategy | ✅ built + risk engine fully unit-tested offline | `npm run test:perps-risk`, `npm run test:perps-connection` |
-| 9 | **Funding Rate Arbitrage strategy** (Drift) - the first real strategy on top of Part 8's plumbing | ✅ built + signal logic fully unit-tested offline | `npm run test:funding-arb-signals`, `npm run test:funding-arb-live` |
+| 9 | **Funding Rate Arbitrage strategy** (Drift) - the first real strategy on top of Part 8's plumbing | ✅ built + signal logic fully unit-tested offline + has a real runner (`npm run perps`) | `npm run test:funding-arb-signals`, `npm run test:funding-arb-live` |
 
 Each part has its own `npm run test:<part>` script - run it and read the
 console output before trusting that part.
@@ -218,6 +254,7 @@ drift out of sync with what's actually on-chain.
 ```bash
 npm run test:funding-arb-signals  # 35/35 offline - read this before enabling anything
 npm run test:funding-arb-live     # needs your own RPC + wallet; runs ONE real evaluation cycle, no order unless signals say to AND both enabled flags are true
+npm run perps                     # the actual runner - connects once, then runs checkOnce() on fundingArb.checkIntervalMinutes until you Ctrl+C. Safe with both enabled flags false: it still watches and logs, just never orders.
 ```
 
 ### Parts 5-7: meme-coin snipe/scalp strategy (spot, Pump.fun/Raydium)
@@ -280,6 +317,9 @@ trailing stop → time-stop → ladder tier) each cycle. Wired into
 npm run test:trading-signals         # 26/26 offline - sizing, ATR, all four exit signals - read this first
 npm run test:trading-engine-gating   # 3/3 offline - the trading.enabled / non-PASS gates specifically
 npm run test:trading-live            # needs real network; gets one real Jupiter quote, no swap, no funds moved
+npm run test:trading-retry           # 14/14 offline - sell-failure backoff/abandonment (see the hardening-pass table above)
+npm run test:trading-reconciliation  # 11/11 offline - position store vs. real wallet balance
+npm run test:trading-human-units     # 8/8 offline - raw <-> human-readable display conversions
 ```
 
 ### Part 1: RPC connection

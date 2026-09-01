@@ -12,6 +12,9 @@ export interface TokenMetrics {
   mint: string;
   fetchedAt: string;
 
+  /** Raw decimals from the mint account - null if we couldn't fetch it. Lets downstream code (e.g. src/trading/engine.ts) convert raw token amounts to human-readable ones for display. */
+  decimals: number | null;
+
   /** null when we could not determine it (e.g. no known pool/vault, or the RPC call failed). */
   liquiditySol: number | null;
 
@@ -270,12 +273,14 @@ export async function collectTokenMetrics(
   let mintAuthorityRenounced: boolean | null = null;
   let freezeAuthorityRenounced: boolean | null = null;
   let riskyTokenExtensions: string[] | null = null;
+  let decimals: number | null = null;
   let supplyRaw = 0n;
   try {
     const renounce = await timeout(getRenounceStatus(connection, mint), "renounce status");
     mintAuthorityRenounced = renounce.mintAuthorityRenounced;
     freezeAuthorityRenounced = renounce.freezeAuthorityRenounced;
     riskyTokenExtensions = renounce.riskyTokenExtensions;
+    decimals = renounce.decimals;
     supplyRaw = renounce.supplyRaw;
   } catch (err: any) {
     warnings.push(`renounce status: ${err?.message || err}`);
@@ -376,6 +381,7 @@ export async function collectTokenMetrics(
   return {
     mint: event.mint,
     fetchedAt: new Date().toISOString(),
+    decimals,
     liquiditySol,
     topHolderPercent,
     devWalletPercent,

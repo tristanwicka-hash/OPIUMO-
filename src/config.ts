@@ -50,6 +50,18 @@ export interface TradingConfig {
   /** Exit if the position hasn't moved (see src/trading/exitLogic.ts for "moved") within this many hours of entry. */
   timeStopHours: number;
   priceCheckIntervalMs: number;
+  /**
+   * A failed sell (rugged token, zero liquidity, RPC hiccup, ...) used to retry every single
+   * monitoring cycle forever with no backoff and no way to ever stop - on a genuinely dead
+   * token that meant hammering Jupiter indefinitely. Fixed: failures now back off exponentially
+   * (sellFailureBackoffBaseMs, doubling each consecutive failure, capped at
+   * sellFailureBackoffMaxMs), and after maxConsecutiveSellFailures the position is marked
+   * abandoned - no further automatic sell attempts, logged loudly, needs your manual review.
+   * See src/trading/retry.ts.
+   */
+  maxConsecutiveSellFailures: number;
+  sellFailureBackoffBaseMs: number;
+  sellFailureBackoffMaxMs: number;
 }
 
 export interface FiltersConfig {
@@ -135,7 +147,15 @@ export interface AppConfig {
 }
 
 function loadJsonConfig(): Omit<AppConfig, "rpcUrl" | "wsUrl" | "walletPrivateKey"> {
-  const configPath = path.resolve(__dirname, "..", "config", "default.json");
+  // Resolved against process.cwd(), not __dirname - same convention every other file path in
+  // this repo already uses (logs/*.jsonl, logs/*.json, etc - see src/util/logger.ts,
+  // src/trading/positionStore.ts, ...). __dirname would have been wrong here regardless: it
+  // points at wherever THIS compiled/source file happens to sit (dist/src/ after a build,
+  // src/ under ts-node), and config/default.json is never copied into dist/ by the build at
+  // all - found and fixed after `npm run build && npm start` (documented in the README as a
+  // supported way to run this) turned out to have been broken since the very first commit,
+  // never caught because every test in this repo runs via ts-node against source, not dist.
+  const configPath = path.resolve(process.cwd(), "config", "default.json");
   const raw = fs.readFileSync(configPath, "utf-8");
   const parsed = JSON.parse(raw);
   // Strip "_comment" keys so they never leak into runtime logic.
@@ -170,6 +190,11 @@ function validate(config: AppConfig): void {
     errors.push("trading.trailingStopPercent must be between 0 and 100");
   }
   if (config.trading.timeStopHours <= 0) errors.push("trading.timeStopHours must be > 0");
+  if (config.trading.maxConsecutiveSellFailures <= 0) errors.push("trading.maxConsecutiveSellFailures must be > 0");
+  if (config.trading.sellFailureBackoffBaseMs <= 0) errors.push("trading.sellFailureBackoffBaseMs must be > 0");
+  if (config.trading.sellFailureBackoffMaxMs < config.trading.sellFailureBackoffBaseMs) {
+    errors.push("trading.sellFailureBackoffMaxMs must be >= sellFailureBackoffBaseMs");
+  }
   if (config.trading.enabled && !config.walletPrivateKey) {
     errors.push("trading.enabled is true but WALLET_PRIVATE_KEY is not set in .env");
   }

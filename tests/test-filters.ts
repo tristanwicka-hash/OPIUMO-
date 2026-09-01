@@ -44,6 +44,7 @@ function goodMetrics(overrides: Partial<TokenMetrics> = {}): TokenMetrics {
   return {
     mint: event.mint,
     fetchedAt: new Date().toISOString(),
+    decimals: 6,
     liquiditySol: 10,
     topHolderPercent: 10,
     devWalletPercent: 5,
