@@ -28,6 +28,7 @@
     "test:trading-reconciliation": "ts-node tests/test-trading-reconciliation.ts",
     "test:trading-human-units": "ts-node tests/test-trading-human-units.ts",
     "test:trading-live": "ts-node tests/test-trading-live.ts",
+    "test:paper-trading": "ts-node tests/test-paper-trading.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

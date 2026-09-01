@@ -24,6 +24,20 @@ export interface JupiterConfig {
 
 export interface TradingConfig {
   enabled: boolean;
+  /**
+   * Safety net UNDER trading.enabled, not a replacement for it. Defaults true, meaning: even
+   * once you flip trading.enabled=true, the engine still won't touch real money until you ALSO
+   * explicitly set this to false. While true, the engine runs the exact same pipeline as live
+   * trading - real Jupiter quotes for sizing/entry/exit prices, real position sizing math, real
+   * ATR-stop/trailing-stop/time-stop/take-profit-ladder logic - but every "buy"/"sell" is a
+   * simulated fill (see SpotTradingEngine.simulateFill): no transaction is ever built, signed,
+   * or sent, and no wallet is required. Paper positions/trades are written to entirely separate
+   * files (logging.paperTradesFile, logs/paper-positions.json, logs/paper-price-history.json) so
+   * there is no way for simulated activity to ever mix with real position/trade history. This is
+   * the tool for validating the exit ladder/trailing-stop/ATR-stop logic against live market data
+   * before ever risking real SOL.
+   */
+  paperTrading: boolean;
   /** Your total trading bankroll in SOL - position sizes are derived from this, not a flat amount. */
   totalCapitalSol: number;
   /** 0.5-1% per the strategy spec. Actual position is ALSO clamped by a non-overridable hard cap in code (src/trading/sizing.ts) that this value cannot loosen. */
@@ -93,6 +107,8 @@ export interface LoggingConfig {
   logDir: string;
   decisionsFile: string;
   tradesFile: string;
+  /** Where paper-trading fills are logged - kept entirely separate from tradesFile (real trades) so the two can never mix. */
+  paperTradesFile: string;
   perpsTradesFile: string;
   maxLogFileSizeMB: number;
 }
@@ -195,8 +211,20 @@ function validate(config: AppConfig): void {
   if (config.trading.sellFailureBackoffMaxMs < config.trading.sellFailureBackoffBaseMs) {
     errors.push("trading.sellFailureBackoffMaxMs must be >= sellFailureBackoffBaseMs");
   }
-  if (config.trading.enabled && !config.walletPrivateKey) {
-    errors.push("trading.enabled is true but WALLET_PRIVATE_KEY is not set in .env");
+  // A real wallet is only required for LIVE trading (enabled=true AND paperTrading=false) -
+  // paper trading never signs or sends a transaction, so it never needs a real key.
+  if (config.trading.enabled && !config.trading.paperTrading && !config.walletPrivateKey) {
+    errors.push("trading.enabled is true and paperTrading is false (LIVE mode) but WALLET_PRIVATE_KEY is not set in .env");
+  }
+  if (config.trading.enabled && !config.trading.paperTrading) {
+    // Not a hard error (you may genuinely mean to go live), but this is exactly the kind of
+    // thing that should make you stop and double check - see the perps.enabled/mainnet-beta
+    // warning below for the same pattern.
+    console.warn(
+      "\n*** WARNING: trading.enabled=true AND trading.paperTrading=false - this bot will place REAL " +
+        "buy/sell orders with REAL SOL on the next filter PASS. If that isn't deliberate, stop and fix " +
+        "config/default.json now. ***\n"
+    );
   }
   if (config.filters.minUniqueWalletToTxRatio < 0 || config.filters.minUniqueWalletToTxRatio > 1) {
     errors.push("filters.minUniqueWalletToTxRatio must be between 0 and 1");

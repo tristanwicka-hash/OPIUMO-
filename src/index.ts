@@ -14,7 +14,12 @@ async function main() {
   const config = loadConfig();
 
   logger.info("=== OPIUMO Sniper Bot starting ===");
-  logger.info(`Trading enabled: ${config.trading.enabled ? "YES - LIVE TRADING" : "no (detection/filtering only)"}`);
+  const tradingMode = !config.trading.enabled
+    ? "no (detection/filtering only)"
+    : config.trading.paperTrading
+    ? "YES - PAPER (simulated fills, no real orders)"
+    : "YES - LIVE TRADING (real SOL)";
+  logger.info(`Trading enabled: ${tradingMode}`);
   logger.info(`Watching: pumpfun=${config.sources.watchPumpFun} raydium=${config.sources.watchRaydium}`);
 
   // Part 1: prove the RPC connection is alive before doing anything else.
@@ -28,22 +33,36 @@ async function main() {
   const decisionLog = new DecisionLog();
   const watcher = new PoolWatcher(connection);
 
-  // Parts 5-7: only built if trading.enabled=true AND a wallet is configured - config
-  // validation already requires both together, so this is a belt-and-suspenders check, not
-  // the actual gate (every buy/sell inside SpotTradingEngine re-checks trading.enabled itself).
+  // Parts 5-7: only built if trading.enabled=true. A real wallet is only required for LIVE
+  // trading (paperTrading=false) - config validation already enforces that pairing, so this is
+  // a belt-and-suspenders check, not the actual gate (every buy/sell inside SpotTradingEngine
+  // re-checks trading.enabled/paperTrading itself).
   let tradingEngine: SpotTradingEngine | null = null;
   if (config.trading.enabled) {
-    if (!config.walletPrivateKey) {
-      logger.error("trading.enabled is true but WALLET_PRIVATE_KEY is not set - this should have failed config validation already.");
+    if (!config.trading.paperTrading && !config.walletPrivateKey) {
+      logger.error(
+        "trading.enabled is true and paperTrading is false (LIVE mode) but WALLET_PRIVATE_KEY is not set - " +
+          "this should have failed config validation already."
+      );
       process.exit(1);
     }
-    const wallet = loadWalletFromBase58(config.walletPrivateKey);
+    // A wallet is optional in paper mode - only used (if present) so log lines show a real
+    // address; SpotTradingEngine never signs or sends anything while paperTrading is true.
+    const wallet = config.walletPrivateKey ? loadWalletFromBase58(config.walletPrivateKey) : null;
     tradingEngine = new SpotTradingEngine(connection, wallet);
     tradingEngine.start();
-    logger.warn(
-      `*** LIVE TRADING IS ON *** wallet=${wallet.publicKey.toBase58()} totalCapitalSol=${config.trading.totalCapitalSol} ` +
-        `maxOpenPositions=${config.trading.maxOpenPositions}`
-    );
+    const walletLabel = wallet ? wallet.publicKey.toBase58() : "(none configured - not needed in paper mode)";
+    if (config.trading.paperTrading) {
+      logger.warn(
+        `*** PAPER TRADING IS ON *** simulated fills only, no real orders will be placed. wallet=${walletLabel} ` +
+          `totalCapitalSol=${config.trading.totalCapitalSol} maxOpenPositions=${config.trading.maxOpenPositions}`
+      );
+    } else {
+      logger.warn(
+        `*** LIVE TRADING IS ON *** wallet=${walletLabel} totalCapitalSol=${config.trading.totalCapitalSol} ` +
+          `maxOpenPositions=${config.trading.maxOpenPositions}`
+      );
+    }
   }
 
   // Part 2 -> Part 3 -> Part 4 -> (Part 5, if enabled): on every new pool, fetch metrics, filter, log, maybe buy.

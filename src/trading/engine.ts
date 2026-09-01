@@ -3,7 +3,7 @@ import { loadConfig, TakeProfitStep } from "../config";
 import { Logger } from "../util/logger";
 import { NewPoolEvent } from "../watcher/types";
 import { FilterResult } from "../filters/engine";
-import { executeSwap, getQuote, SOL_MINT } from "./jupiter";
+import { executeSwap, getQuote, SOL_MINT, SwapResult } from "./jupiter";
 import { computeSpotPositionSizeSol } from "./sizing";
 import { computeATR, candlesFromPrices } from "./atr";
 import { checkAtrStopLoss, checkTimeStop, checkTrailingStop, checkLadderTier, computeAtrStopPrice } from "./exitLogic";
@@ -36,18 +36,28 @@ const LAMPORTS_PER_SOL = 1_000_000_000;
  */
 export class SpotTradingEngine {
   private connection: Connection;
-  private wallet: Keypair;
+  /**
+   * Null is valid ONLY in paper-trading mode (trading.paperTrading=true) - no transaction is
+   * ever signed there, so no real wallet is needed. Config validation guarantees a non-null
+   * wallet whenever paperTrading is false and enabled is true (see src/config.ts), so every
+   * live-only code path below can safely assert non-null.
+   */
+  private wallet: Keypair | null;
   private priceHistory: PriceHistoryStore;
   private positions: PositionStore;
   private tradeLog: SpotTradeLog;
   private timer: ReturnType<typeof setInterval> | null = null;
 
-  constructor(connection: Connection, wallet: Keypair, priceHistory?: PriceHistoryStore, positions?: PositionStore, tradeLog?: SpotTradeLog) {
+  constructor(connection: Connection, wallet: Keypair | null, priceHistory?: PriceHistoryStore, positions?: PositionStore, tradeLog?: SpotTradeLog) {
     this.connection = connection;
     this.wallet = wallet;
-    this.priceHistory = priceHistory ?? new PriceHistoryStore("logs/price-history.json");
-    this.positions = positions ?? new PositionStore("logs/spot-positions.json");
-    this.tradeLog = tradeLog ?? new SpotTradeLog();
+    // Paper-trading state lives in entirely separate files from live-trading state, by default,
+    // so simulated activity can never mix with real position/trade history even across restarts
+    // where you flip paperTrading on/off. Explicit stores passed in by tests/callers always win.
+    const paper = loadConfig().trading.paperTrading;
+    this.priceHistory = priceHistory ?? new PriceHistoryStore(paper ? "logs/paper-price-history.json" : "logs/price-history.json");
+    this.positions = positions ?? new PositionStore(paper ? "logs/paper-positions.json" : "logs/spot-positions.json");
+    this.tradeLog = tradeLog ?? new SpotTradeLog(paper ? loadConfig().logging.paperTradesFile : loadConfig().logging.tradesFile, paper);
   }
 
   start(): void {
@@ -117,7 +127,9 @@ export class SpotTradingEngine {
       }
 
       const buyLamports = Math.round(sizing.positionSizeSol * LAMPORTS_PER_SOL);
-      const swap = await executeSwap(this.connection, this.wallet, SOL_MINT, event.mint, String(buyLamports), config.trading.maxSlippageBps);
+      const swap: SwapResult = config.trading.paperTrading
+        ? await this.simulateFill(SOL_MINT, event.mint, String(buyLamports), config.trading.maxSlippageBps)
+        : await executeSwap(this.connection, this.wallet as Keypair, SOL_MINT, event.mint, String(buyLamports), config.trading.maxSlippageBps);
 
       const entryPriceSol = Number(swap.inAmountRaw) / LAMPORTS_PER_SOL / Number(swap.outAmountRaw);
       const stopLossPriceSol = entryPriceSol * (1 + config.trading.fallbackStopLossPercent / 100);
@@ -154,7 +166,8 @@ export class SpotTradingEngine {
         txSignature: swap.signature,
       });
       const humanPrice = formatHuman(toHumanPricePerToken(entryPriceSol, decimals), " SOL/token");
-      logger.info(`BOUGHT ${event.mint}: ${sizing.positionSizeSol.toFixed(4)} SOL @ ${humanPrice} (tx ${swap.signature})`);
+      const prefix = config.trading.paperTrading ? "[PAPER] " : "";
+      logger.info(`${prefix}BOUGHT ${event.mint}: ${sizing.positionSizeSol.toFixed(4)} SOL @ ${humanPrice} (tx ${swap.signature})`);
     } catch (err: any) {
       logger.error(`Buy failed for ${event.mint}: ${err?.message || err}`);
       this.tradeLog.recordFailedExecution({ mint: event.mint, action: "buy", error: err?.message || String(err) });
@@ -186,8 +199,14 @@ export class SpotTradingEngine {
     // tokens moved for any other reason), remainingSizeTokens would be silently wrong forever -
     // nothing else in this loop would ever notice. Correcting here means every subsequent sell
     // size/P&L calculation this cycle uses the real number, not a stale one.
-    const reconciled = await this.reconcilePosition(position);
-    if (!reconciled) return; // position was removed - wallet holds none of it anymore
+    //
+    // Skipped entirely in paper mode: a simulated position was never bought on-chain, so there
+    // is no real wallet balance to compare it against (and, per the class-level note above,
+    // this.wallet may legitimately be null here).
+    if (!config.trading.paperTrading) {
+      const reconciled = await this.reconcilePosition(position);
+      if (!reconciled) return; // position was removed - wallet holds none of it anymore
+    }
 
     const quote = await executeSwapQuoteOnly(position.mint, position.remainingSizeTokens, true);
     const currentPriceSol = Number(quote.outAmount) / LAMPORTS_PER_SOL / position.remainingSizeTokens;
@@ -253,6 +272,13 @@ export class SpotTradingEngine {
    * it's still open and the caller should continue).
    */
   private async reconcilePosition(position: SpotPosition): Promise<boolean> {
+    // Only ever called from checkPosition() when paperTrading is false, and config validation
+    // (src/config.ts) guarantees a real wallet whenever that's the case - this check exists so
+    // the type system doesn't have to trust that call chain, and so a future caller mistake
+    // fails loudly instead of crashing on `.publicKey` of null.
+    if (!this.wallet) {
+      throw new Error("reconcilePosition() called with no wallet configured - this should be unreachable outside paper-trading mode");
+    }
     let actualRaw: number;
     try {
       const accounts = await this.connection.getParsedTokenAccountsByOwner(this.wallet.publicKey, {
@@ -321,13 +347,35 @@ export class SpotTradingEngine {
     return true;
   }
 
+  /**
+   * Paper-trading fill: gets a REAL Jupiter quote (so entry/exit prices, sizing, and P&L are all
+   * computed against real live market prices - the whole point of "paper trading" over a pure
+   * backtest) but never builds, signs, or sends a transaction, and never touches a wallet.
+   * Returns the exact same shape executeSwap() does, so every line downstream of the buy/sell
+   * call site (position creation, P&L math, logging) is IDENTICAL between paper and live
+   * trading - simulateFill vs executeSwap is the ONLY thing that differs between the two modes.
+   * The signature is a clearly-fake "PAPER-..." placeholder (never a real on-chain signature) so
+   * it can't be confused with a real transaction if ever looked up.
+   */
+  private async simulateFill(inputMint: string, outputMint: string, amountRaw: string, slippageBps: number): Promise<SwapResult> {
+    const quote = await getQuote(inputMint, outputMint, amountRaw, slippageBps);
+    return {
+      signature: `PAPER-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      inAmountRaw: quote.inAmount,
+      outAmountRaw: quote.outAmount,
+      priceImpactPct: Number(quote.priceImpactPct) || 0,
+    };
+  }
+
   private async executeExit(position: SpotPosition, currentPriceSol: number, sellPercentOfRemaining: number, reason: string): Promise<void> {
     const config = loadConfig();
     const sellAmountRaw = Math.floor(position.remainingSizeTokens * (sellPercentOfRemaining / 100));
     if (sellAmountRaw <= 0) return;
 
     try {
-      const swap = await executeSwap(this.connection, this.wallet, position.mint, SOL_MINT, String(sellAmountRaw), config.trading.maxSlippageBps);
+      const swap: SwapResult = config.trading.paperTrading
+        ? await this.simulateFill(position.mint, SOL_MINT, String(sellAmountRaw), config.trading.maxSlippageBps)
+        : await executeSwap(this.connection, this.wallet as Keypair, position.mint, SOL_MINT, String(sellAmountRaw), config.trading.maxSlippageBps);
       const solReceived = Number(swap.outAmountRaw) / LAMPORTS_PER_SOL;
       const costBasisSol = (sellAmountRaw / position.entrySizeTokens) * (position.entrySizeTokens * position.entryPriceSol);
       const pnlSol = solReceived - costBasisSol;
@@ -347,7 +395,8 @@ export class SpotTradingEngine {
         reason,
         txSignature: swap.signature,
       });
-      logger.info(`SOLD ${sellPercentOfRemaining}% of ${position.mint}: ${solReceived.toFixed(4)} SOL, P&L ${pnlSol.toFixed(4)} SOL (${pnlPercent.toFixed(1)}%) - ${reason}`);
+      const prefix = config.trading.paperTrading ? "[PAPER] " : "";
+      logger.info(`${prefix}SOLD ${sellPercentOfRemaining}% of ${position.mint}: ${solReceived.toFixed(4)} SOL, P&L ${pnlSol.toFixed(4)} SOL (${pnlPercent.toFixed(1)}%) - ${reason}`);
 
       const remaining = position.remainingSizeTokens - sellAmountRaw;
       if (remaining <= 0) {

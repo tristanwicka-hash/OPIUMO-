@@ -9,8 +9,9 @@
   },
 
   "trading": {
-    "_comment": "Master switch. MUST be flipped to true by hand once you have verified the filter logic yourself. See NON-NEGOTIABLES in README.md. Position sizing is risk-based (from stop-loss distance), not a flat SOL amount - set totalCapitalSol to your real trading bankroll. riskPercentPerTrade is your dial (0.5-1% per the strategy spec); there is ALSO a non-overridable hard cap (1% of capital) enforced in src/trading/sizing.ts that no config value can loosen - in practice that hard cap is what actually sizes most trades, see the comment there.",
+    "_comment": "Master switch. MUST be flipped to true by hand once you have verified the filter logic yourself. See NON-NEGOTIABLES in README.md. Position sizing is risk-based (from stop-loss distance), not a flat SOL amount - set totalCapitalSol to your real trading bankroll. riskPercentPerTrade is your dial (0.5-1% per the strategy spec); there is ALSO a non-overridable hard cap (1% of capital) enforced in src/trading/sizing.ts that no config value can loosen - in practice that hard cap is what actually sizes most trades, see the comment there. paperTrading is a SECOND, independent safety net: even after enabled=true, real money is only ever at risk once paperTrading is ALSO set to false - until then every buy/sell is a simulated fill against real Jupiter prices, logged to logging.paperTradesFile instead of tradesFile. No wallet is required while paperTrading is true.",
     "enabled": false,
+    "paperTrading": true,
     "totalCapitalSol": 10,
     "riskPercentPerTrade": 0.75,
     "maxOpenPositions": 5,
@@ -62,6 +63,7 @@
     "logDir": "logs",
     "decisionsFile": "logs/decisions.jsonl",
     "tradesFile": "logs/trades.jsonl",
+    "paperTradesFile": "logs/paper-trades.jsonl",
     "perpsTradesFile": "logs/perps-trades.jsonl",
     "maxLogFileSizeMB": 20
   },

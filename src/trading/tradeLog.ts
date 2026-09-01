@@ -8,10 +8,20 @@ import { JsonlLog } from "../util/logger";
  */
 export class SpotTradeLog {
   private jsonl: JsonlLog;
+  private isPaper: boolean;
 
-  constructor() {
+  /**
+   * filePath defaults to config.logging.tradesFile (real trades). Pass
+   * logging.paperTradesFile + isPaper=true to get a paper-trading log
+   * instead - kept as separate constructor args (not auto-detected) so
+   * callers can't accidentally mix the two. Every record this class writes
+   * carries an `isPaper` field so a line is self-describing even in
+   * isolation, on top of the file-level separation.
+   */
+  constructor(filePath?: string, isPaper = false) {
     const config = loadConfig();
-    this.jsonl = new JsonlLog(config.logging.tradesFile, config.logging.maxLogFileSizeMB);
+    this.jsonl = new JsonlLog(filePath ?? config.logging.tradesFile, config.logging.maxLogFileSizeMB);
+    this.isPaper = isPaper;
   }
 
   recordBuy(params: {
@@ -26,7 +36,7 @@ export class SpotTradeLog {
     stopLossPriceSol: number;
     txSignature: string;
   }) {
-    this.jsonl.append({ event: "buy", ...params });
+    this.jsonl.append({ event: "buy", isPaper: this.isPaper, ...params });
   }
 
   recordSell(params: {
@@ -43,20 +53,20 @@ export class SpotTradeLog {
     reason: string;
     txSignature: string;
   }) {
-    this.jsonl.append({ event: "sell", ...params });
+    this.jsonl.append({ event: "sell", isPaper: this.isPaper, ...params });
   }
 
   recordRejectedBuy(params: { mint: string; reasons: string[] }) {
-    this.jsonl.append({ event: "rejected-buy", ...params });
+    this.jsonl.append({ event: "rejected-buy", isPaper: this.isPaper, ...params });
   }
 
   recordFailedExecution(params: { mint: string; action: "buy" | "sell"; error: string; sellFailureCount?: number }) {
-    this.jsonl.append({ event: "failed-execution", ...params });
+    this.jsonl.append({ event: "failed-execution", isPaper: this.isPaper, ...params });
   }
 
   /** A position that hit maxConsecutiveSellFailures - no further automatic sell attempts, needs manual review. */
   recordAbandoned(params: { mint: string; sellFailureCount: number; lastError: string }) {
-    this.jsonl.append({ event: "abandoned", ...params });
+    this.jsonl.append({ event: "abandoned", isPaper: this.isPaper, ...params });
   }
 
   /**
@@ -66,7 +76,7 @@ export class SpotTradeLog {
    * so it's logged as its own event, not folded into recordSell().
    */
   recordReconciliationMismatch(params: { mint: string; trackedRaw: number; actualRaw: number; action: "corrected" | "removed" }) {
-    this.jsonl.append({ event: "reconciliation-mismatch", ...params });
+    this.jsonl.append({ event: "reconciliation-mismatch", isPaper: this.isPaper, ...params });
   }
 
   readAll() {

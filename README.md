@@ -85,16 +85,8 @@ returned just `"?"` instead of `"?" + suffix` - the suffix was dropped on the
 null branch. Caught by the very test written to cover the new code, before
 it shipped.
 
-One other real gap from that review was **not** touched here, because the
-honest fix is bigger than a "fix it" pass and deserves its own design, not
-a rushed addition:
-- **No paper-trading mode.** The only two states today are "log decisions,
-  never trade" (`trading.enabled=false`) and "trade with real SOL/leverage."
-  There's no middle ground that runs the full pipeline - real prices, real
-  sizing, real exit logic - against simulated fills. This is the highest-
-  value thing to build next; it's how you'd validate the exit ladder/
-  trailing-stop/ATR-stop logic (which has never executed against live data)
-  without risking anything.
+The other real gap from that review - **no paper-trading mode** - is now
+built. See **Part 10** below.
 
 **The Raydium `initialize2` account indices, flagged as unverified since
 the first hardening pass, are now confirmed** (2026-09-01) against
@@ -116,6 +108,7 @@ to spot-check a specific live transaction, but it's no longer a blocker.
 | 5-7 | **Meme-coin snipe/scalp strategy**: auto-buy (Jupiter), ATR stop / tiered take-profit / trailing stop / time-stop, trade logging | ✅ built + decision logic fully unit-tested offline | `npm run test:trading-signals`, `test:trading-engine-gating`, `test:trading-live` |
 | 8 | **Perps trading (Drift Protocol)** - plumbing only, no strategy | ✅ built + risk engine fully unit-tested offline | `npm run test:perps-risk`, `npm run test:perps-connection` |
 | 9 | **Funding Rate Arbitrage strategy** (Drift) - the first real strategy on top of Part 8's plumbing | ✅ built + signal logic fully unit-tested offline + has a real runner (`npm run perps`) | `npm run test:funding-arb-signals`, `npm run test:funding-arb-live` |
+| 10 | **Paper trading mode** (spot sniper) - real prices/sizing/exit logic, simulated fills | ✅ built + fully unit-tested offline | `npm run test:paper-trading` |
 
 Each part has its own `npm run test:<part>` script - run it and read the
 console output before trusting that part.
@@ -261,6 +254,64 @@ npm run test:funding-arb-signals  # 35/35 offline - read this before enabling an
 npm run test:funding-arb-live     # needs your own RPC + wallet; runs ONE real evaluation cycle, no order unless signals say to AND both enabled flags are true
 npm run perps                     # the actual runner - connects once, then runs checkOnce() on fundingArb.checkIntervalMinutes until you Ctrl+C. Safe with both enabled flags false: it still watches and logs, just never orders.
 ```
+
+### Part 10: Paper trading mode (spot sniper)
+
+The middle ground flagged as missing in the hardening pass above: until now
+the spot sniper only had two states, "log decisions, never trade"
+(`trading.enabled=false`) and "trade with real SOL" - nothing that actually
+exercised the buy/sell pipeline without risking money.
+
+**`trading.paperTrading`** (`config/default.json`, defaults `true`) is a
+*second, independent* safety net underneath `trading.enabled` - real money
+is only ever at risk once **both** `trading.enabled=true` **and**
+`trading.paperTrading=false`. While `paperTrading` is `true`:
+
+- Every step up to the fill is identical to live trading: the same filter
+  PASS triggers `onFilterPass()`, the same risk-based sizing math runs
+  against a real Jupiter quote, and every open position is monitored on the
+  same interval against the same ATR-stop / trailing-stop / time-stop /
+  take-profit-ladder logic (`checkPosition()`), fed by **real, live Jupiter
+  quotes** - not a backtest against historical candles, not a random-walk
+  simulation.
+- The one thing that's fake: `SpotTradingEngine.simulateFill()` gets a real
+  quote and returns it in the exact same shape `executeSwap()` does, but
+  never builds, signs, or sends a transaction, and never touches a wallet.
+  Every line downstream (position creation, P&L math, logging) is the
+  identical code path live trading uses - `simulateFill` vs `executeSwap`
+  at the call site is the *only* difference between the two modes.
+- Paper positions/trades are written to **entirely separate files**
+  (`logs/paper-positions.json`, `logs/paper-price-history.json`,
+  `logging.paperTradesFile` → `logs/paper-trades.jsonl`) so simulated
+  activity can never mix with real position/trade history, even across
+  restarts where you flip `paperTrading` on and off. Every logged record
+  also carries its own `isPaper` field as a second layer of separation.
+- **No wallet is required** while `paperTrading` is `true` - config
+  validation only demands `WALLET_PRIVATE_KEY` once you set
+  `paperTrading: false` (going live). `checkPosition()` also skips wallet
+  balance reconciliation entirely in paper mode - there's no real balance
+  to reconcile against a simulated position.
+- Console lines and JSONL records are prefixed/tagged so paper activity is
+  never confused for real activity while watching the logs live (e.g.
+  `[PAPER] BOUGHT ...`, signatures like `PAPER-<timestamp>-<random>` instead
+  of a real base58 transaction signature).
+
+This is the tool for actually validating the exit ladder/trailing-stop/
+ATR-stop logic against live market data (which had never executed against
+real prices before this) before ever setting `paperTrading: false`.
+
+```bash
+npm run test:paper-trading   # 13/13 offline - simulateFill()'s shape/behavior + the reconciliation-skip, both mocked (no live network needed)
+```
+
+Not covered by the offline test (would need live network, or would require
+mutating the real `config/default.json` in place mid-test - a risk not
+worth taking for a file that gates real trading, same scoping call already
+made for `trading.enabled=true` in `test-trading-engine-gating.ts`): the
+full `onFilterPass()` paper-buy path end-to-end. Run the bot for real with
+`trading.enabled=true` and the default `paperTrading=true` and watch
+`logs/paper-trades.jsonl` fill up before ever touching `paperTrading:
+false`.
 
 ### Parts 5-7: meme-coin snipe/scalp strategy (spot, Pump.fun/Raydium)
 
