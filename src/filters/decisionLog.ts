@@ -17,7 +17,7 @@ export class DecisionLog {
   constructor() {
     const config = loadConfig();
     this.logger = new Logger("filters", config.logging.level);
-    this.jsonl = new JsonlLog(config.logging.decisionsFile);
+    this.jsonl = new JsonlLog(config.logging.decisionsFile, config.logging.maxLogFileSizeMB);
   }
 
   record(result: FilterResult): void {

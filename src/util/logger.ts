@@ -58,17 +58,43 @@ export class Logger {
   }
 }
 
-/** Appends one JSON object per line to a log file (decisions, trades, ...). */
+/**
+ * Appends one JSON object per line to a log file (decisions, trades, ...).
+ * Rotates the file once it crosses maxSizeBytes: the current file is renamed
+ * to "<name>.<timestamp>.jsonl" and a fresh empty file takes its place, so a
+ * long-running bot doesn't grow one unbounded file forever. Rotated files are
+ * never deleted automatically - clean them up yourself once you've archived
+ * whatever you need from them.
+ */
 export class JsonlLog {
   private filePath: string;
+  private maxSizeBytes: number;
 
-  constructor(filePath: string) {
+  constructor(filePath: string, maxSizeMB = 20) {
     this.filePath = filePath;
+    this.maxSizeBytes = maxSizeMB * 1024 * 1024;
     ensureDir(path.dirname(filePath));
     if (!fs.existsSync(filePath)) fs.writeFileSync(filePath, "");
   }
 
+  private rotateIfNeeded() {
+    let size = 0;
+    try {
+      size = fs.statSync(this.filePath).size;
+    } catch {
+      return; // file doesn't exist yet - nothing to rotate
+    }
+    if (size < this.maxSizeBytes) return;
+
+    const { dir, name, ext } = path.parse(this.filePath);
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const rotatedPath = path.join(dir, `${name}.${stamp}${ext}`);
+    fs.renameSync(this.filePath, rotatedPath);
+    fs.writeFileSync(this.filePath, "");
+  }
+
   append(record: Record<string, unknown>) {
+    this.rotateIfNeeded();
     const line = JSON.stringify({ ts: new Date().toISOString(), ...record });
     fs.appendFileSync(this.filePath, line + "\n");
   }

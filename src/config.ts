@@ -52,6 +52,7 @@ export interface LoggingConfig {
   logDir: string;
   decisionsFile: string;
   tradesFile: string;
+  maxLogFileSizeMB: number;
 }
 
 export interface AppConfig {

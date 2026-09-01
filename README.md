@@ -55,9 +55,14 @@ left out):
   `minLiquiditySol` threshold as-is.
 - `getTopHolderPercent` is capped at the RPC's top-20 accounts
   (`getTokenLargestAccounts`) - a dev who splits their bag across 20+ wallets
-  won't be caught. Inherent RPC limitation, not a bug.
-- No log rotation on `logs/decisions.jsonl` - fine for now, will grow
-  unbounded on a long-running instance.
+  won't be caught. Inherent RPC limitation, not a bug - nothing to fix here.
+
+**Fixed since the table above** (2026-09-01, second pass): log rotation.
+`JsonlLog` (`src/util/logger.ts`) now rotates `logs/decisions.jsonl` (and any
+other JSONL log) to a timestamped file once it crosses
+`logging.maxLogFileSizeMB` (default 20MB), so a long-running bot no longer
+grows one unbounded file. Rotated files are never auto-deleted - clean them
+up yourself once archived. Covered by `npm run test:logger` (5/5 pass).
 
 ## Status
 

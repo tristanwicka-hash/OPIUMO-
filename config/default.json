@@ -41,6 +41,7 @@
     "level": "info",
     "logDir": "logs",
     "decisionsFile": "logs/decisions.jsonl",
-    "tradesFile": "logs/trades.jsonl"
+    "tradesFile": "logs/trades.jsonl",
+    "maxLogFileSizeMB": 20
   }
 }

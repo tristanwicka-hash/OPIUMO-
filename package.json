@@ -14,6 +14,7 @@
     "test:watcher": "ts-node tests/test-watcher.ts",
     "test:metrics": "ts-node tests/test-token-metrics.ts",
     "test:filters": "ts-node tests/test-filters.ts",
+    "test:logger": "ts-node tests/test-logger.ts",
     "test:trading": "ts-node tests/test-trading.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

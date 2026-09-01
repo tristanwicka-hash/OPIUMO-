@@ -13,6 +13,7 @@ const suites = [
   { name: "Pool watcher (Part 2)", script: "tests/test-watcher.ts" },
   { name: "Token metrics (Part 3)", script: "tests/test-token-metrics.ts" },
   { name: "Filter engine (Part 4)", script: "tests/test-filters.ts" },
+  { name: "Log rotation (util)", script: "tests/test-logger.ts" },
 ];
 
 let anyFailed = false;
