@@ -9,3 +9,7 @@ data/*.jsonl
 !data/.gitkeep
 *.log
 .DS_Store
+
+# Obsidian vault - private notes, never commit (this repo is public)
+vault/
+.obsidian/

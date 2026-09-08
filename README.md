@@ -15,6 +15,16 @@ tested, and safe to run vs. what's implemented but still gated off.
 3. **Every decision is logged to the console and to `logs/*.jsonl`** so you
    can see exactly what the bot is doing and why, in real time.
 
+## Working on this project
+
+- **`CLAUDE.md`** (repo root) is the working agreement - non-negotiables,
+  testing conventions, repo facts. Claude Code loads it automatically every
+  session, so you don't have to re-explain the project each time.
+- **`docs/vault-starter/`** holds starter notes for an Obsidian vault
+  (strategy reasoning, config reference, trade journal, competitor research,
+  session handoffs). Copy it to a vault folder **outside this repo** - this
+  repo is public, your notes shouldn't be. See `docs/vault-starter/README.md`.
+
 ## Setup
 
 ```bash
