@@ -14,6 +14,13 @@ data/*.jsonl
 reports/*
 !reports/.gitkeep
 
-# Obsidian vault - private notes, never commit (this repo is public)
+# Obsidian vault - private notes, never commit (this repo is public).
+# The vault normally lives OUTSIDE this repo; these patterns are a backstop
+# for the day someone copies or moves it in. It has been renamed several
+# times, so every name it has had is listed - a pattern with a space still
+# works here, and needs no escaping.
 vault/
+Vault/
+Tristan Vault/
+Tristans Vault/
 .obsidian/

@@ -3,25 +3,34 @@
 Copy the contents of this folder into your Obsidian vault, which should live
 **outside this repo** (this repo is public - your notes should not be).
 
-Recommended layout on disk:
+Layout on disk:
 
 ```
-~/Desktop/opiumo/
-├── bot/      <- this git repo (public)
-└── vault/    <- your Obsidian vault (private, never committed)
+~/Documents/TristansVault/
+├── OPIUMO-/           <- this git repo (public)
+└── Tristans Vault/    <- the Obsidian vault (private, never committed)
 ```
 
-Open `~/Desktop/opiumo/` as the folder in VS Code and Claude Code can read
-and write both, with no plugin or MCP server needed.
+The vault is a **sibling** of the repo, never inside it. Open
+`~/Documents/TristansVault/` as the folder in VS Code and Claude Code can
+read and write both, with no plugin or MCP server needed.
+
+> **The folder name contains a space.** Quote it in every shell command:
+> `ls "../Tristans Vault"`. Unquoted, the path splits into two arguments and
+> the vault appears not to exist - `ls: ../Tristans: No such file or
+> directory` - which reads like a missing folder rather than a quoting bug.
 
 To set it up:
 
 ```bash
-cp -R ~/Desktop/opiumo/bot/docs/vault-starter/ ~/Desktop/opiumo/vault/
-rm ~/Desktop/opiumo/vault/README.md
+# Note the quoting: ~ must stay OUTSIDE the quotes to expand,
+# the space must stay INSIDE them.
+cp -R ~/Documents/TristansVault/OPIUMO-/docs/vault-starter/ ~/Documents/TristansVault/"Tristans Vault"/
+rm ~/Documents/TristansVault/"Tristans Vault"/README.md
 ```
 
-Then in Obsidian: **Open folder as vault** -> pick `~/Desktop/opiumo/vault`.
+Then in Obsidian: **Open folder as vault** -> pick
+`~/Documents/TristansVault/Tristans Vault`.
 
 ## What goes where
 

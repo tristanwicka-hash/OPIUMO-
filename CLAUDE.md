@@ -116,16 +116,22 @@ committed to a public repo. The expected layout, wherever the repo is
 checked out:
 
 ```
-opiumo/                 <- any parent directory
-├── OPIUMO-/            <- this repo
-└── Vault/              <- the Obsidian vault (private, never committed)
+opiumo/                     <- any parent directory
+├── OPIUMO-/                <- this repo
+└── Tristans Vault/         <- the Obsidian vault (private, never committed)
 ```
 
-So from the repo root the vault is `../Vault`. If it is present in the
-workspace, read `../Vault/00-Index.md` when you need background on *why* a
-threshold or design choice is the way it is.
+So from the repo root the vault is `../Tristans Vault`. If it is present in
+the workspace, read `../Tristans Vault/00-Index.md` when you need background
+on *why* a threshold or design choice is the way it is.
 
-If `../Vault` does not resolve, look in the parent directory for a sibling
-whose name contains "Vault" or "vault" (case-insensitive) before concluding
-there is no vault - the folder has been named both ways. Starter templates
-for the vault are in `docs/vault-starter/`.
+**Note the space in the folder name** - quote it in any shell command
+(`ls "../Tristans Vault"`), or the path will silently split into two
+arguments and appear not to exist.
+
+If `../Tristans Vault` does not resolve, look in the parent directory for a
+sibling whose name contains "Vault" or "vault" (case-insensitive) before
+concluding there is no vault - this folder has been renamed more than once
+(`vault`, `Vault`, `Tristan Vault`, `Tristans Vault`), so match loosely
+rather than trusting the exact name above. Starter templates for the vault
+are in `docs/vault-starter/`.
