@@ -24,3 +24,29 @@ export const PUMPFUN_CREATE_LOG_MARKER = "Program log: Instruction: Create";
 
 /** Log substring that appears when Raydium's `initialize2` instruction runs. */
 export const RAYDIUM_INITIALIZE2_LOG_MARKER = "init_pc_amount";
+
+/**
+ * Program IDs that must NEVER be treated as a wallet address.
+ *
+ * This exists because of a real bug: pumpfunWatcher used a hardcoded account
+ * index for the creator wallet, and on Token-2022 mints that index landed on
+ * the Token-2022 PROGRAM. 139 logged records then asked the chain "what token
+ * accounts does the Token-2022 program own?", which failed with a confusing
+ * "could not find mint" instead of an honest "that is not a wallet".
+ */
+export const KNOWN_PROGRAM_IDS: Record<string, string> = {
+  TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA: "SPL Token",
+  TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb: "Token-2022",
+  "11111111111111111111111111111111": "System",
+  ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL: "Associated Token",
+  metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s: "Metaplex Token Metadata",
+  SysvarRent111111111111111111111111111111111: "Rent Sysvar",
+  [PUMPFUN_PROGRAM_ID.toBase58()]: "Pump.fun",
+  [RAYDIUM_AMM_V4_PROGRAM_ID.toBase58()]: "Raydium AMM V4",
+};
+
+/** Returns the program's name if `address` is a known program ID, else null. */
+export function identifyKnownProgram(address: string | undefined): string | null {
+  if (!address) return null;
+  return KNOWN_PROGRAM_IDS[address] ?? null;
+}

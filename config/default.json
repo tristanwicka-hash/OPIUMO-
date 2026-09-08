@@ -55,7 +55,10 @@
   "polling": {
     "metricsMaxAgeMs": 4000,
     "metricsFetchTimeoutMs": 8000,
-    "walletActivitySampleSize": 100
+    "walletActivitySampleSize": 100,
+    "_concurrencyComment": "Detected tokens are processed through a bounded queue instead of all at once. Every token previously fired its full ~110-call metrics pipeline in parallel with every other, which is what produced the HTTP 429s and 20s collection times. maxConcurrentTokens is how many are worked on at a time; maxQueuedTokens caps the backlog, and the OLDEST waiting token is dropped past that (a stale launch is worth less than a fresh one). Raise maxConcurrentTokens only if your RPC provider's rate limit has headroom.",
+    "maxConcurrentTokens": 2,
+    "maxQueuedTokens": 50
   },
 
   "logging": {

@@ -25,11 +25,20 @@ export interface FilterResult {
  * Philosophy: a metric we couldn't fetch (null) is treated as a FAILED
  * rule, not a skipped check. "Unknown" is never good enough to buy on.
  */
-export function evaluateFilters(
-  event: NewPoolEvent,
-  metrics: TokenMetrics,
-  filters: FiltersConfig
-): FilterResult {
+/**
+ * Every check that depends ONLY on stage-1 metrics (liquidity, top holder,
+ * dev wallet, renounce status, token extensions, creator LP).
+ *
+ * Exported so collectTokenMetrics() can ask "given what stage 1 found, is this
+ * token still capable of passing?" without duplicating the rules. Sharing one
+ * implementation is the whole point: a second copy of these checks would drift
+ * from this one and the early-skip optimisation would start changing decisions.
+ *
+ * Because `reasons` is append-only and no stage-1 rule reads an activity
+ * metric, a non-empty result here means the final decision is ALREADY SKIP -
+ * running stage 2 could only add more reasons, never remove one.
+ */
+export function evaluateStage1Reasons(metrics: TokenMetrics, filters: FiltersConfig): string[] {
   const reasons: string[] = [];
 
   // -- liquidity --
@@ -105,8 +114,25 @@ export function evaluateFilters(
   // curve's own program logic makes the liquidity structurally un-rug-pullable by the creator -
   // this check is not applicable and does not add a reason either way.
 
+  return reasons;
+}
+
+/**
+ * The stage-2 (activity) checks plus staleness. Split out only so
+ * evaluateStage1Reasons() can be shared; the ordering of the combined list is
+ * unchanged from before the split.
+ */
+function evaluateActivityAndStalenessReasons(metrics: TokenMetrics, filters: FiltersConfig): string[] {
+  const reasons: string[] = [];
+
   // -- unique wallets vs tx volume --
-  if (metrics.uniqueWallets === null || metrics.transactionCount === null) {
+  if (metrics.activitySkippedEarly) {
+    // Deliberately not collected - the token had already failed a stage-1 rule,
+    // so the ~101 RPC calls behind this metric could not have changed the
+    // outcome. Stated explicitly rather than omitted, and worded so it can
+    // never be mistaken for an RPC failure.
+    reasons.push("activity metrics not collected (skipped early - token already failed an earlier check)");
+  } else if (metrics.uniqueWallets === null || metrics.transactionCount === null) {
     reasons.push("wallet activity unknown (could not fetch recent signatures)");
   } else {
     if (metrics.uniqueWallets < filters.minUniqueWallets) {
@@ -137,6 +163,21 @@ export function evaluateFilters(
   if (metrics.stale) {
     reasons.push("metrics are stale (took too long to collect - see config.polling.metricsMaxAgeMs)");
   }
+
+  return reasons;
+}
+
+export function evaluateFilters(
+  event: NewPoolEvent,
+  metrics: TokenMetrics,
+  filters: FiltersConfig
+): FilterResult {
+  // Order is stage-1 rules, then activity, then staleness - exactly as before
+  // these were split into two functions.
+  const reasons = [
+    ...evaluateStage1Reasons(metrics, filters),
+    ...evaluateActivityAndStalenessReasons(metrics, filters),
+  ];
 
   return {
     mint: event.mint,

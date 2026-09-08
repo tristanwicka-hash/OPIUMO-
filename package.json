@@ -31,6 +31,7 @@
     "test:trading-live": "ts-node tests/test-trading-live.ts",
     "test:paper-trading": "ts-node tests/test-paper-trading.ts",
     "test:paper-performance": "ts-node tests/test-paper-performance.ts",
+    "test:two-stage": "ts-node tests/test-two-stage-metrics.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

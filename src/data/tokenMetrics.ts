@@ -1,6 +1,7 @@
 import { Connection, PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { unpackMint, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, getExtensionTypes, ExtensionType } from "@solana/spl-token";
-import { loadConfig, PollingConfig } from "../config";
+import { loadConfig, PollingConfig, FiltersConfig } from "../config";
+import { evaluateStage1Reasons } from "../filters/engine";
 import { Logger } from "../util/logger";
 import { NewPoolEvent } from "../watcher/types";
 
@@ -55,6 +56,22 @@ export interface TokenMetrics {
 
   /** True if collecting these metrics took longer than polling.metricsMaxAgeMs - treat with suspicion, the token's on-chain state may have moved since. */
   stale: boolean;
+
+  /**
+   * True when the expensive activity metrics (uniqueWallets/transactionCount)
+   * were DELIBERATELY not collected because stage-1 data already guaranteed a
+   * SKIP. This is not the same as "we tried and the RPC failed" - the filter
+   * engine words the two differently, and conflating them would claim a
+   * network failure that never happened.
+   */
+  activitySkippedEarly: boolean;
+
+  /** ms spent on the cheap stage-1 metric calls. */
+  stage1ElapsedMs: number;
+  /** ms spent on the expensive activity call. Null when stage 2 was skipped. */
+  stage2ElapsedMs: number | null;
+  /** ms for the whole collection, stage 1 + stage 2. */
+  totalElapsedMs: number;
 
   /** Any partial failures, so the filter engine can decide how to treat them - always check this before trusting a PASS. */
   warnings: string[];
@@ -261,36 +278,78 @@ export async function getWalletActivity(
 export async function collectTokenMetrics(
   connection: Connection,
   event: NewPoolEvent,
-  pollingOverrides?: Partial<PollingConfig>
+  pollingOverrides?: Partial<PollingConfig>,
+  filtersOverride?: FiltersConfig
 ): Promise<TokenMetrics> {
   const config = loadConfig();
   const polling = { ...config.polling, ...pollingOverrides };
+  const filters = filtersOverride ?? config.filters;
   const warnings: string[] = [];
   const mint = new PublicKey(event.mint);
   const startedAt = Date.now();
   const timeout = <T>(p: Promise<T>, label: string) => withTimeout(p, polling.metricsFetchTimeoutMs, label);
 
+  // ---------------------------------------------------------------------
+  // STAGE 1 - the cheap metrics (~4 RPC calls), run concurrently.
+  //
+  // Two waves, not one, because getTopHolderPercent/getWalletMintPercent both
+  // need `supplyRaw` from the renounce read - without it they return null
+  // before making a call, so firing them alongside it would waste the call.
+  //   wave A: renounce status, liquidity, creator LP   (independent)
+  //   wave B: top holder %, dev wallet %               (need supplyRaw)
+  // ---------------------------------------------------------------------
   let mintAuthorityRenounced: boolean | null = null;
   let freezeAuthorityRenounced: boolean | null = null;
   let riskyTokenExtensions: string[] | null = null;
   let decimals: number | null = null;
   let supplyRaw = 0n;
-  try {
-    const renounce = await timeout(getRenounceStatus(connection, mint), "renounce status");
-    mintAuthorityRenounced = renounce.mintAuthorityRenounced;
-    freezeAuthorityRenounced = renounce.freezeAuthorityRenounced;
-    riskyTokenExtensions = renounce.riskyTokenExtensions;
-    decimals = renounce.decimals;
-    supplyRaw = renounce.supplyRaw;
-  } catch (err: any) {
-    warnings.push(`renounce status: ${err?.message || err}`);
-    // mintAuthorityRenounced/freezeAuthorityRenounced/riskyTokenExtensions stay null ("unknown"),
-    // NOT false/empty ("confirmed clean") - the filter engine tells those states apart.
-  }
-
   let creatorLpPercent: number | null = null;
+  let liquiditySol: number | null = null;
   const lpCheckApplicable = event.source === "raydium";
-  if (lpCheckApplicable) {
+
+  const renouncePromise = (async () => {
+    try {
+      const renounce = await timeout(getRenounceStatus(connection, mint), "renounce status");
+      mintAuthorityRenounced = renounce.mintAuthorityRenounced;
+      freezeAuthorityRenounced = renounce.freezeAuthorityRenounced;
+      riskyTokenExtensions = renounce.riskyTokenExtensions;
+      decimals = renounce.decimals;
+      supplyRaw = renounce.supplyRaw;
+    } catch (err: any) {
+      warnings.push(`renounce status: ${err?.message || err}`);
+      // stays null ("unknown"), NOT false/empty ("confirmed clean") - the filter engine tells those apart.
+    }
+  })();
+
+  const liquidityPromise = (async () => {
+    try {
+      if (event.source === "pumpfun" && event.poolAddress) {
+        liquiditySol = await timeout(getPumpFunLiquiditySol(connection, new PublicKey(event.poolAddress)), "pumpfun liquidity");
+      } else if (event.source === "raydium") {
+        if (!event.raydiumPcMint) {
+          warnings.push("no pcMint captured - cannot determine which vault is the SOL side");
+        } else {
+          liquiditySol = await timeout(
+            getRaydiumLiquiditySol(
+              connection,
+              event.mint,
+              event.raydiumPcMint,
+              event.raydiumCoinVault ? new PublicKey(event.raydiumCoinVault) : undefined,
+              event.raydiumPcVault ? new PublicKey(event.raydiumPcVault) : undefined
+            ),
+            "raydium liquidity"
+          );
+        }
+      } else {
+        warnings.push("no pool address available - cannot compute liquiditySol");
+      }
+    } catch (err: any) {
+      warnings.push(`liquiditySol: ${err?.message || err}`);
+    }
+  })();
+
+  const lpPromise = (async () => {
+    if (!lpCheckApplicable) return;
     try {
       if (!event.raydiumLpMint || !event.creator) {
         warnings.push("no lpMint or creator captured - cannot compute creatorLpPercent");
@@ -303,75 +362,89 @@ export async function collectTokenMetrics(
     } catch (err: any) {
       warnings.push(`creatorLpPercent: ${err?.message || err}`);
     }
-  }
-  // Pump.fun pre-migration: no separate LP token exists, and the bonding curve's own program
-  // logic makes the liquidity structurally un-rug-pullable by the creator - lpCheckApplicable
-  // stays false and creatorLpPercent stays null, which the filter engine treats as "N/A", not
-  // "unknown/fail" (see TokenMetrics.lpCheckApplicable).
+  })();
 
-  let liquiditySol: number | null = null;
-  try {
-    if (event.source === "pumpfun" && event.poolAddress) {
-      liquiditySol = await timeout(getPumpFunLiquiditySol(connection, new PublicKey(event.poolAddress)), "pumpfun liquidity");
-    } else if (event.source === "raydium") {
-      if (!event.raydiumPcMint) {
-        warnings.push("no pcMint captured - cannot determine which vault is the SOL side");
-      } else {
-        liquiditySol = await timeout(
-          getRaydiumLiquiditySol(
-            connection,
-            event.mint,
-            event.raydiumPcMint,
-            event.raydiumCoinVault ? new PublicKey(event.raydiumCoinVault) : undefined,
-            event.raydiumPcVault ? new PublicKey(event.raydiumPcVault) : undefined
-          ),
-          "raydium liquidity"
-        );
-      }
-    } else {
-      warnings.push("no pool address available - cannot compute liquiditySol");
-    }
-  } catch (err: any) {
-    warnings.push(`liquiditySol: ${err?.message || err}`);
-  }
+  await Promise.all([renouncePromise, liquidityPromise, lpPromise]);
 
   let topHolderPercent: number | null = null;
-  try {
-    const exclude = new Set<string>([event.poolAddress, event.raydiumCoinVault, event.raydiumPcVault].filter(Boolean) as string[]);
-    topHolderPercent = await timeout(getTopHolderPercent(connection, mint, supplyRaw, exclude), "top holder %");
-  } catch (err: any) {
-    warnings.push(`topHolderPercent: ${err?.message || err}`);
-  }
-
   let devWalletPercent: number | null = null;
-  try {
-    if (event.creator) {
-      devWalletPercent = await timeout(getWalletMintPercent(connection, mint, new PublicKey(event.creator), supplyRaw), "dev wallet %");
-    } else {
-      warnings.push("no creator wallet identified - cannot compute devWalletPercent");
-    }
-  } catch (err: any) {
-    warnings.push(`devWalletPercent: ${err?.message || err}`);
-  }
+  await Promise.all([
+    (async () => {
+      try {
+        const exclude = new Set<string>([event.poolAddress, event.raydiumCoinVault, event.raydiumPcVault].filter(Boolean) as string[]);
+        topHolderPercent = await timeout(getTopHolderPercent(connection, mint, supplyRaw, exclude), "top holder %");
+      } catch (err: any) {
+        warnings.push(`topHolderPercent: ${err?.message || err}`);
+      }
+    })(),
+    (async () => {
+      try {
+        if (event.creator) {
+          devWalletPercent = await timeout(getWalletMintPercent(connection, mint, new PublicKey(event.creator), supplyRaw), "dev wallet %");
+        } else {
+          warnings.push("no creator wallet identified - cannot compute devWalletPercent");
+        }
+      } catch (err: any) {
+        warnings.push(`devWalletPercent: ${err?.message || err}`);
+      }
+    })(),
+  ]);
+
+  const stage1ElapsedMs = Date.now() - startedAt;
+
+  // ---------------------------------------------------------------------
+  // STAGE 2 GATE - is this token still capable of passing?
+  //
+  // evaluateStage1Reasons() is the SAME code the real filter runs, so this
+  // cannot drift from the actual rules. A non-empty result means the decision
+  // is already SKIP: `reasons` is append-only and no stage-1 rule reads an
+  // activity metric, so stage 2 could only add reasons, never remove one.
+  // Skipping it therefore saves ~101 RPC calls without changing any decision.
+  // ---------------------------------------------------------------------
+  const stage1Reasons = evaluateStage1Reasons(
+    {
+      liquiditySol,
+      topHolderPercent,
+      devWalletPercent,
+      mintAuthorityRenounced,
+      freezeAuthorityRenounced,
+      riskyTokenExtensions,
+      creatorLpPercent,
+      lpCheckApplicable,
+    } as TokenMetrics,
+    filters
+  );
+  const activitySkippedEarly = stage1Reasons.length > 0;
 
   let uniqueWallets: number | null = null;
   let transactionCount: number | null = null;
-  try {
-    const activityAddress = event.poolAddress ? new PublicKey(event.poolAddress) : mint;
-    const activity = await timeout(
-      getWalletActivity(connection, activityAddress, polling.walletActivitySampleSize),
-      "wallet activity"
+  let stage2ElapsedMs: number | null = null;
+
+  if (activitySkippedEarly) {
+    logger.debug(
+      `${event.mint}: skipping activity metrics (~${polling.walletActivitySampleSize + 1} RPC calls) - ` +
+        `already failing on: ${stage1Reasons.join("; ")}`
     );
-    uniqueWallets = activity.uniqueWallets;
-    transactionCount = activity.transactionCount;
-  } catch (err: any) {
-    warnings.push(`walletActivity: ${err?.message || err}`);
+  } else {
+    const stage2StartedAt = Date.now();
+    try {
+      const activityAddress = event.poolAddress ? new PublicKey(event.poolAddress) : mint;
+      const activity = await timeout(
+        getWalletActivity(connection, activityAddress, polling.walletActivitySampleSize),
+        "wallet activity"
+      );
+      uniqueWallets = activity.uniqueWallets;
+      transactionCount = activity.transactionCount;
+    } catch (err: any) {
+      warnings.push(`walletActivity: ${err?.message || err}`);
+    }
+    stage2ElapsedMs = Date.now() - stage2StartedAt;
   }
 
-  const elapsedMs = Date.now() - startedAt;
-  const stale = elapsedMs > polling.metricsMaxAgeMs;
+  const totalElapsedMs = Date.now() - startedAt;
+  const stale = totalElapsedMs > polling.metricsMaxAgeMs;
   if (stale) {
-    warnings.push(`metrics took ${elapsedMs}ms to collect (> metricsMaxAgeMs ${polling.metricsMaxAgeMs}ms) - data may be stale`);
+    warnings.push(`metrics took ${totalElapsedMs}ms to collect (> metricsMaxAgeMs ${polling.metricsMaxAgeMs}ms) - data may be stale`);
   }
 
   if (warnings.length > 0) {
@@ -393,6 +466,10 @@ export async function collectTokenMetrics(
     uniqueWallets,
     transactionCount,
     stale,
+    activitySkippedEarly,
+    stage1ElapsedMs,
+    stage2ElapsedMs,
+    totalElapsedMs,
     warnings,
   };
 }

@@ -66,11 +66,21 @@ function fixtureAccounts(count: number): PublicKey[] {
 }
 
 /** Builds a minimal object matching the slice of ParsedTransactionWithMeta we read. */
-function fixtureParsedTx(programId: PublicKey, accounts: PublicKey[]) {
+/**
+ * `feePayer` becomes accountKeys[0] - which is where extractPumpFunNewPool now
+ * reads the creator from, rather than a hardcoded instruction account index.
+ * Defaults to a fresh random key so existing callers get a realistic wallet.
+ */
+function fixtureParsedTx(programId: PublicKey, accounts: PublicKey[], feePayer?: PublicKey) {
+  const payer = feePayer ?? Keypair.generate().publicKey;
   return {
     slot: 123456789,
     transaction: {
       message: {
+        accountKeys: [
+          { pubkey: payer, signer: true, writable: true },
+          ...accounts.map((pubkey) => ({ pubkey, signer: false, writable: false })),
+        ],
         instructions: [{ programId, accounts }],
       },
     },
@@ -108,17 +118,38 @@ async function main() {
   console.log("\n-- mint extraction (fixture data) --");
   {
     const accounts = fixtureAccounts(14);
-    const tx = fixtureParsedTx(PUMPFUN_PROGRAM_ID, accounts);
+    const feePayer = Keypair.generate().publicKey;
+    const tx = fixtureParsedTx(PUMPFUN_PROGRAM_ID, accounts, feePayer);
     const event = extractPumpFunNewPool("sig1", 1, tx);
     check("extractPumpFunNewPool returns an event", event !== null);
     check(
       "extractPumpFunNewPool picks mint at the documented index",
       event?.mint === accounts[PUMPFUN_CREATE_ACCOUNT_INDEX.mint].toBase58()
     );
+    // Creator now comes from the transaction FEE PAYER (accountKeys[0]), not a
+    // fixed instruction account index. A Token-2022 mint carries metadata as a
+    // mint extension, which drops two Metaplex accounts and shifts index 7 onto
+    // the Token-2022 PROGRAM - that produced 139 bogus "creator" values in a
+    // real run. The fee payer is guaranteed by Solana's transaction format, so
+    // it survives that layout difference.
     check(
-      "extractPumpFunNewPool picks creator at the documented index",
-      event?.creator === accounts[PUMPFUN_CREATE_ACCOUNT_INDEX.user].toBase58()
+      "extractPumpFunNewPool takes creator from the fee payer, not an account index",
+      event?.creator === feePayer.toBase58()
     );
+    check(
+      "  ...and NOT from the old index-7 slot",
+      event?.creator !== accounts[PUMPFUN_CREATE_ACCOUNT_INDEX.user].toBase58()
+    );
+  }
+
+  // The exact bug this replaced: a program ID must never be reported as a wallet.
+  {
+    const accounts = fixtureAccounts(14);
+    const token2022 = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+    const tx = fixtureParsedTx(PUMPFUN_PROGRAM_ID, accounts, token2022);
+    const event = extractPumpFunNewPool("sig-token2022", 1, tx);
+    check("a Token-2022 PROGRAM ID as fee payer is refused as a creator", event?.creator === undefined);
+    check("  ...but the event is still produced (mint is still valid)", event !== null && event.mint.length > 0);
   }
   {
     const accounts = fixtureAccounts(18);

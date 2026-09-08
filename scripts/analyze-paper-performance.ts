@@ -302,7 +302,17 @@ function buildMarkdown(r: PerformanceReport, args: Args, notes: string[], fundin
   L.push(`| Decisions logged | ${r.decisionsTotal} |`);
   L.push(`| PASS | ${r.decisionsPassed} |`);
   L.push(`| SKIP | ${r.decisionsSkipped} |`);
+  L.push(`| DROPPED (never evaluated - queue full) | ${r.decisionsDropped} |`);
   L.push("");
+  if (r.decisionsDropped > 0) {
+    L.push(
+      `> **${r.decisionsDropped} token(s) were dropped before evaluation** because the work queue was ` +
+        "full. They are not PASS/SKIP outcomes and are excluded from the rates above - but they mean " +
+        "detection outpaced metrics collection, so the surviving sample is not fully representative.",
+    );
+    L.push("");
+  }
+
   if (r.topSkipReasons.length > 0) {
     L.push("### Top SKIP reasons");
     L.push("");
@@ -383,7 +393,10 @@ function main() {
     const earned = pnl ? `, earned ${pnl.totalPnlSol.toFixed(6)} SOL (${n(pnl.shareOfGrossProfitPercent, 0, "%")} of gross)` : "";
     console.log(`  ${`Ladder ${t.tier}x hit:`.padEnd(18)} ${t.positionsHit} (${t.percentOfClosed.toFixed(1)}% of closed)${earned}`);
   }
-  console.log(`  Decisions:         ${report.decisionsPassed} PASS / ${report.decisionsSkipped} SKIP`);
+  console.log(
+    `  Decisions:         ${report.decisionsPassed} PASS / ${report.decisionsSkipped} SKIP` +
+      (report.decisionsDropped > 0 ? ` / ${report.decisionsDropped} DROPPED (never evaluated)` : ""),
+  );
   if (funding && funding.closes > 0) {
     console.log(`  Perp closes:       ${funding.closes} (${funding.closesWithRealized} with a realized figure)`);
     console.log(`  Funding capture:   ${n(funding.overallCaptureRatePercent, 1, "%")} (realized net of fees / theoretical gross)`);

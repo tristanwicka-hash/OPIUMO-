@@ -26,6 +26,7 @@ const suites = [
   { name: "Spot sniper Jupiter quote (live)", script: "tests/test-trading-live.ts" },
   { name: "Paper trading mode (Part 10, offline)", script: "tests/test-paper-trading.ts" },
   { name: "Paper-trading performance analyzer (offline)", script: "tests/test-paper-performance.ts" },
+  { name: "Two-stage metrics + work queue (offline)", script: "tests/test-two-stage-metrics.ts" },
 ];
 
 let anyFailed = false;

@@ -148,6 +148,13 @@ export interface PerformanceReport {
   decisionsTotal: number;
   decisionsPassed: number;
   decisionsSkipped: number;
+  /**
+   * Tokens the work queue dropped before they were ever evaluated. NOT a
+   * filter outcome - counted separately so PASS/SKIP rates are never computed
+   * over the biased subset that happened to survive an overloaded queue.
+   * detected = passed + skipped + dropped.
+   */
+  decisionsDropped: number;
   /** Most common SKIP reasons, descending. */
   topSkipReasons: Array<{ reason: string; count: number }>;
   /**
@@ -435,8 +442,10 @@ export function analyze(
   const skipReasonCounts = new Map<string, number>();
   let decisionsPassed = 0;
   let decisionsSkipped = 0;
+  let decisionsDropped = 0;
   for (const d of decisions.filter((d) => isWithinWindow(d.ts, window))) {
     if (d.decision === "PASS") decisionsPassed++;
+    else if (d.decision === "DROPPED") decisionsDropped++;
     else if (d.decision === "SKIP") {
       decisionsSkipped++;
       for (const reason of d.reasons ?? []) {
@@ -475,6 +484,7 @@ export function analyze(
     decisionsTotal: decisions.filter((d) => isWithinWindow(d.ts, window)).length,
     decisionsPassed,
     decisionsSkipped,
+    decisionsDropped,
     topSkipReasons,
     ladderTierPnl,
     exitKindPnl,

@@ -100,6 +100,10 @@ export interface PollingConfig {
   metricsMaxAgeMs: number;
   metricsFetchTimeoutMs: number;
   walletActivitySampleSize: number;
+  /** How many detected tokens are processed at once. Bounded so the RPC provider isn't flooded. */
+  maxConcurrentTokens: number;
+  /** Cap on the backlog of waiting tokens; past this the OLDEST is dropped. */
+  maxQueuedTokens: number;
 }
 
 export interface LoggingConfig {
@@ -201,6 +205,8 @@ function validate(config: AppConfig): void {
   if (config.trading.atrStopMultiplier <= 0) errors.push("trading.atrStopMultiplier must be > 0");
   if (config.trading.fallbackStopLossPercent >= 0) errors.push("trading.fallbackStopLossPercent must be negative (e.g. -30)");
   if (config.trading.maxOpenPositions <= 0) errors.push("trading.maxOpenPositions must be > 0");
+  if (config.polling.maxConcurrentTokens <= 0) errors.push("polling.maxConcurrentTokens must be > 0 (set it to 1 to process one token at a time)");
+  if (config.polling.maxQueuedTokens <= 0) errors.push("polling.maxQueuedTokens must be > 0");
   if (config.trading.trailingStopActivateMultiple <= 1) errors.push("trading.trailingStopActivateMultiple must be > 1 (it's a multiple of entry price)");
   if (config.trading.trailingStopPercent <= 0 || config.trading.trailingStopPercent >= 100) {
     errors.push("trading.trailingStopPercent must be between 0 and 100");

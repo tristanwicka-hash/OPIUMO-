@@ -56,6 +56,10 @@ function goodMetrics(overrides: Partial<TokenMetrics> = {}): TokenMetrics {
     stale: false,
     uniqueWallets: 40,
     transactionCount: 60,
+    activitySkippedEarly: false,
+    stage1ElapsedMs: 10,
+    stage2ElapsedMs: 20,
+    totalElapsedMs: 30,
     warnings: [],
     ...overrides,
   };

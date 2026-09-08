@@ -1,6 +1,10 @@
 import { ParsedTransactionWithMeta, PartiallyDecodedInstruction } from "@solana/web3.js";
 import { NewPoolEvent } from "./types";
-import { PUMPFUN_PROGRAM_ID, PUMPFUN_CREATE_LOG_MARKER } from "./programs";
+import { PUMPFUN_PROGRAM_ID, PUMPFUN_CREATE_LOG_MARKER, identifyKnownProgram } from "./programs";
+import { Logger } from "../util/logger";
+import { loadConfig } from "../config";
+
+const logger = new Logger("watcher", loadConfig().logging.level);
 
 /**
  * Account order for Pump.fun's `create` instruction, per the program's
@@ -16,7 +20,20 @@ export const PUMPFUN_CREATE_ACCOUNT_INDEX = {
   mintAuthority: 1,
   bondingCurve: 2,
   associatedBondingCurve: 3,
-  user: 7, // the wallet that created the token ("dev wallet")
+  /**
+   * NO LONGER USED to identify the creator - kept for reference only.
+   *
+   * Index 7 is `user` in the classic create layout, and it works for the
+   * majority of launches. But a Token-2022 mint carries its metadata as a mint
+   * EXTENSION, so the two Metaplex accounts drop out of the account list and
+   * every later index shifts down by two - putting the Token-2022 PROGRAM at
+   * index 7. In a 3-hour run that produced 139 records where the "creator"
+   * was TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb.
+   *
+   * Changing it to 5 would just invert the bug and break the ~77% that work.
+   * The fee payer is used instead - see extractPumpFunNewPool().
+   */
+  user: 7,
 };
 
 export function isPumpFunCreateLog(logs: string[]): boolean {
@@ -46,10 +63,33 @@ export function extractPumpFunNewPool(
 
     const accounts = partial.accounts;
     const mintPk = accounts[PUMPFUN_CREATE_ACCOUNT_INDEX.mint];
-    const userPk = accounts[PUMPFUN_CREATE_ACCOUNT_INDEX.user];
     if (!mintPk) continue;
 
     const bondingCurvePk = accounts[PUMPFUN_CREATE_ACCOUNT_INDEX.bondingCurve];
+
+    // The creator is the transaction's FEE PAYER, not a fixed account index.
+    //
+    // accountKeys[0] is always the fee payer and first signer - that is
+    // guaranteed by Solana's transaction format, not by Pump.fun's IDL, so it
+    // survives the account-layout shift that broke the old index-7 approach and
+    // works for both the classic and Token-2022 create variants. Whoever creates
+    // a Pump.fun token signs and pays for that transaction. The same pattern is
+    // already used by getWalletActivity() in src/data/tokenMetrics.ts.
+    const feePayer = tx?.transaction.message.accountKeys?.[0]?.pubkey?.toBase58();
+
+    // Never hand a program ID onward as if it were a wallet. This is the guard
+    // that was missing: the old bug queried a program's token accounts and got
+    // a confusing RPC error instead of an honest "that is not a wallet".
+    const programName = identifyKnownProgram(feePayer);
+    let creator: string | undefined = feePayer;
+    if (programName) {
+      logger.error(
+        `Pump.fun create ${signature}: fee payer resolved to the ${programName} PROGRAM (${feePayer}), not a wallet. ` +
+          `Refusing to use it as the creator - devWalletPercent will be reported as unknown. ` +
+          `This should not happen; if it recurs, the transaction shape has changed.`
+      );
+      creator = undefined;
+    }
 
     return {
       source: "pumpfun",
@@ -59,7 +99,7 @@ export function extractPumpFunNewPool(
       // The bonding curve PDA holds the pool's native SOL balance directly -
       // that IS the liquidity for a pre-migration Pump.fun token.
       poolAddress: bondingCurvePk?.toBase58(),
-      creator: userPk?.toBase58(),
+      creator,
       detectedAt: new Date().toISOString(),
     };
   }
