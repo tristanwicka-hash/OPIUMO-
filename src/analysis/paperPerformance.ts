@@ -61,6 +61,31 @@ export interface ClassifiedExit {
   ladderTier: number | null;
 }
 
+/** A classified exit with the sell that produced it attached, so P&L can be attributed per tier. */
+export interface PositionExit extends ClassifiedExit {
+  /** pnlSol from the sell record. Null when the record didn't carry one. */
+  pnlSol: number | null;
+  ts: string | null;
+}
+
+/** Inclusive ISO date window. Either end may be omitted. */
+export interface DateWindow {
+  since?: string;
+  until?: string;
+}
+
+/** Realized P&L attributed to one exit route (a ladder tier, or a terminal exit kind). */
+export interface ExitPnlStat {
+  /** How many sell events of this kind fired. */
+  sells: number;
+  /** Sum of pnlSol across them. */
+  totalPnlSol: number;
+  /** totalPnlSol / sells. Null when no sells carried a P&L figure. */
+  averagePnlSol: number | null;
+  /** Share of the run's gross positive P&L this route produced. Null when nothing was won. */
+  shareOfGrossProfitPercent: number | null;
+}
+
 /** A buy plus every sell that closed against it. */
 export interface ReconstructedPosition {
   mint: string;
@@ -74,7 +99,7 @@ export interface ReconstructedPosition {
   returnPercent: number | null;
   /** True once a sell of kind atr-stop / trailing-stop / time-stop landed, or the full size was sold. */
   isClosed: boolean;
-  exits: ClassifiedExit[];
+  exits: PositionExit[];
   holdingHours: number | null;
 }
 
@@ -125,6 +150,18 @@ export interface PerformanceReport {
   decisionsSkipped: number;
   /** Most common SKIP reasons, descending. */
   topSkipReasons: Array<{ reason: string; count: number }>;
+  /**
+   * Realized P&L attributed to each ladder tier. Answers "is the 10x tier
+   * earning anything, or is it dead weight?" - which the hit-rate alone
+   * cannot, since a tier can fire often and still contribute little.
+   */
+  ladderTierPnl: Array<{ tier: number } & ExitPnlStat>;
+  /** Realized P&L attributed to each terminal exit route. */
+  exitKindPnl: Record<ExitKind, ExitPnlStat>;
+  /** The window actually applied, echoed back so a report is self-describing. */
+  window: DateWindow;
+  /** Closed positions dropped because they closed outside the window. */
+  positionsOutsideWindow: number;
 }
 
 /**
@@ -152,6 +189,27 @@ function median(values: number[]): number | null {
   const s = [...values].sort((a, b) => a - b);
   const mid = Math.floor(s.length / 2);
   return s.length % 2 === 0 ? (s[mid - 1] + s[mid]) / 2 : s[mid];
+}
+
+/**
+ * Inclusive on both ends. An unparseable or absent timestamp fails the test
+ * whenever a bound is set - fail closed: a record we cannot place in time is
+ * not quietly assumed to be inside the window you asked for.
+ */
+export function isWithinWindow(iso: string | null | undefined, window: DateWindow): boolean {
+  if (!window.since && !window.until) return true;
+  if (!iso) return false;
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return false;
+  if (window.since) {
+    const from = Date.parse(window.since);
+    if (!Number.isNaN(from) && t < from) return false;
+  }
+  if (window.until) {
+    const to = Date.parse(window.until);
+    if (!Number.isNaN(to) && t > to) return false;
+  }
+  return true;
 }
 
 function hoursBetween(startIso: string | null, endIso: string | null): number | null {
@@ -204,7 +262,11 @@ export function reconstructPositions(records: TradeRecord[]): ReconstructedPosit
       const pos = open.get(mint);
       if (!pos) continue; // a sell with no matching buy in this file - not attributable
       const exit = classifyExitReason(rec.reason);
-      pos.exits.push(exit);
+      pos.exits.push({
+        ...exit,
+        pnlSol: typeof rec.pnlSol === "number" ? rec.pnlSol : null,
+        ts: rec.ts ?? null,
+      });
       if (typeof rec.pnlSol === "number") pos.totalPnlSol += rec.pnlSol;
       pos.closedAt = rec.ts ?? pos.closedAt;
 
@@ -275,6 +337,7 @@ export function analyze(
   decisions: DecisionRecord[],
   ladderTiersConfigured: number[] = [2, 5, 10],
   paperOnly = true,
+  window: DateWindow = {},
 ): PerformanceReport {
   let skippedNonPaperRecords = 0;
   const usable = trades.filter((t) => {
@@ -284,7 +347,17 @@ export function analyze(
     return false;
   });
 
-  const positions = reconstructPositions(usable);
+  // Positions are reconstructed from EVERY record first, then filtered by date.
+  // Filtering raw records instead would sever sells from a buy that fell outside
+  // the window, turning a real trade into an unattributable orphan and quietly
+  // understating the run. A closed position is placed by its close time, an open
+  // one by its open time.
+  const allPositions = reconstructPositions(usable);
+  const positions = allPositions.filter((p) =>
+    isWithinWindow(p.isClosed ? p.closedAt : p.openedAt, window),
+  );
+  const positionsOutsideWindow = allPositions.length - positions.length;
+
   const closed = positions.filter((p) => p.isClosed);
   const openCount = positions.length - closed.length;
 
@@ -334,10 +407,35 @@ export function analyze(
     ALL_EXIT_KINDS.map((k) => [k, closed.length > 0 ? (exitKindCounts[k] / closed.length) * 100 : 0]),
   ) as Record<ExitKind, number>;
 
+  // Per-exit-route P&L attribution. Hit-rate alone cannot tell you whether a
+  // tier is worth keeping: a tier can fire often and contribute almost nothing.
+  const everyExit = closed.flatMap((p) => p.exits);
+  const grossProfit = everyExit.reduce((a, e) => a + Math.max(0, e.pnlSol ?? 0), 0);
+
+  const statFor = (exits: PositionExit[]): ExitPnlStat => {
+    const withPnl = exits.filter((e) => e.pnlSol !== null);
+    const total = withPnl.reduce((a, e) => a + (e.pnlSol ?? 0), 0);
+    return {
+      sells: exits.length,
+      totalPnlSol: total,
+      averagePnlSol: withPnl.length > 0 ? total / withPnl.length : null,
+      shareOfGrossProfitPercent: grossProfit > 0 ? (Math.max(0, total) / grossProfit) * 100 : null,
+    };
+  };
+
+  const ladderTierPnl = ladderTiersConfigured.map((tier) => ({
+    tier,
+    ...statFor(everyExit.filter((e) => e.kind === "ladder" && e.ladderTier === tier)),
+  }));
+
+  const exitKindPnl = Object.fromEntries(
+    ALL_EXIT_KINDS.map((k) => [k, statFor(everyExit.filter((e) => e.kind === k))]),
+  ) as Record<ExitKind, ExitPnlStat>;
+
   const skipReasonCounts = new Map<string, number>();
   let decisionsPassed = 0;
   let decisionsSkipped = 0;
-  for (const d of decisions) {
+  for (const d of decisions.filter((d) => isWithinWindow(d.ts, window))) {
     if (d.decision === "PASS") decisionsPassed++;
     else if (d.decision === "SKIP") {
       decisionsSkipped++;
@@ -374,9 +472,13 @@ export function analyze(
     abandoned: usable.filter((t) => t.event === "abandoned").length,
     reconciliationMismatches: usable.filter((t) => t.event === "reconciliation-mismatch").length,
     skippedNonPaperRecords,
-    decisionsTotal: decisions.length,
+    decisionsTotal: decisions.filter((d) => isWithinWindow(d.ts, window)).length,
     decisionsPassed,
     decisionsSkipped,
     topSkipReasons,
+    ladderTierPnl,
+    exitKindPnl,
+    window,
+    positionsOutsideWindow,
   };
 }

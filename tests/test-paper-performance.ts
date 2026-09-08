@@ -15,6 +15,7 @@ import {
   classifyExitReason,
   computeMaxDrawdown,
   reconstructPositions,
+  isWithinWindow,
   TradeRecord,
   DecisionRecord,
 } from "../src/analysis/paperPerformance";
@@ -416,6 +417,117 @@ async function main() {
     check("legacy close cannot drag the aggregate rate", legacy.overallCaptureRatePercent === null);
 
     check("empty log -> no closes", summarizeFundingCapture([], {}).closes === 0);
+  }
+
+  // ---------------------------------------------------------------
+  console.log("\n-- analyze: per-tier realized P&L attribution --");
+  {
+    // One position, 1 SOL in, full ladder then a trailing stop:
+    //   2x  tier -> +0.20
+    //   5x  tier -> +0.60
+    //   10x tier -> +1.20
+    //   trailing -> -0.10
+    // gross profit (positive legs only) = 0.20 + 0.60 + 1.20 = 2.00
+    const trades: TradeRecord[] = [
+      buy("T1", "2026-01-01T00:00:00.000Z", 1),
+      sell("T1", "2026-01-01T01:00:00.000Z", 0.2, ladder(2.0, 2, 50)),
+      sell("T1", "2026-01-01T02:00:00.000Z", 0.6, ladder(5.0, 5, 25)),
+      sell("T1", "2026-01-01T03:00:00.000Z", 1.2, ladder(10.0, 10, 25)),
+      sell("T1", "2026-01-01T04:00:00.000Z", -0.1, R_TRAIL),
+    ];
+    const r = analyze(trades, [], [2, 5, 10]);
+
+    const t2 = r.ladderTierPnl.find((t) => t.tier === 2)!;
+    const t5 = r.ladderTierPnl.find((t) => t.tier === 5)!;
+    const t10 = r.ladderTierPnl.find((t) => t.tier === 10)!;
+
+    check("2x tier earned 0.20 SOL", near(t2.totalPnlSol, 0.2));
+    check("5x tier earned 0.60 SOL", near(t5.totalPnlSol, 0.6));
+    check("10x tier earned 1.20 SOL", near(t10.totalPnlSol, 1.2));
+    check("each tier fired once", t2.sells === 1 && t5.sells === 1 && t10.sells === 1);
+    check("2x average = 0.20", near(t2.averagePnlSol, 0.2));
+
+    // shares of the 2.00 gross profit: 10%, 30%, 60%
+    check("2x contributed 10% of gross profit", near(t2.shareOfGrossProfitPercent, 10, 1e-9));
+    check("5x contributed 30% of gross profit", near(t5.shareOfGrossProfitPercent, 30, 1e-9));
+    check("10x contributed 60% of gross profit", near(t10.shareOfGrossProfitPercent, 60, 1e-9));
+
+    // The losing trailing stop is attributed too, and does not count as profit.
+    check("trailing stop attributed -0.10", near(r.exitKindPnl["trailing-stop"].totalPnlSol, -0.1));
+    check("a losing route contributes 0% of gross profit", near(r.exitKindPnl["trailing-stop"].shareOfGrossProfitPercent, 0));
+
+    // A tier that never fired is a real zero, but has no average to report.
+    const noTier = analyze(
+      [buy("T2", "2026-01-01T00:00:00.000Z", 1), sell("T2", "2026-01-01T01:00:00.000Z", -0.5, R_ATR)],
+      [],
+      [2, 5, 10],
+    );
+    const never = noTier.ladderTierPnl.find((t) => t.tier === 10)!;
+    check("tier that never fired -> 0 sells", never.sells === 0);
+    check("tier that never fired -> average is null, not 0", never.averagePnlSol === null);
+  }
+
+  // ---------------------------------------------------------------
+  console.log("\n-- analyze: --since / --until date window --");
+  {
+    // Three positions closing on Jan 1, Jan 5 and Jan 10.
+    const mk = (mint: string, openIso: string, closeIso: string, pnl: number): TradeRecord[] => [
+      buy(mint, openIso, 1),
+      sell(mint, closeIso, pnl, R_ATR),
+    ];
+    const trades: TradeRecord[] = [
+      ...mk("JAN01", "2026-01-01T00:00:00.000Z", "2026-01-01T05:00:00.000Z", -0.1),
+      ...mk("JAN05", "2026-01-05T00:00:00.000Z", "2026-01-05T05:00:00.000Z", 0.5),
+      ...mk("JAN10", "2026-01-10T00:00:00.000Z", "2026-01-10T05:00:00.000Z", 0.7),
+    ];
+
+    const all = analyze(trades, [], [2, 5, 10]);
+    check("no window -> all 3 positions", all.closedPositions === 3);
+    check("no window -> nothing reported outside", all.positionsOutsideWindow === 0);
+
+    const since = analyze(trades, [], [2, 5, 10], true, { since: "2026-01-04T00:00:00.000Z" });
+    check("--since keeps the 2 later positions", since.closedPositions === 2);
+    check("--since reports the 1 dropped", since.positionsOutsideWindow === 1);
+    check("--since P&L excludes the dropped loss", near(since.totalPnlSol, 1.2, 1e-9));
+
+    const until = analyze(trades, [], [2, 5, 10], true, { until: "2026-01-06T00:00:00.000Z" });
+    check("--until keeps the 2 earlier positions", until.closedPositions === 2);
+    check("--until P&L = -0.1 + 0.5 = 0.4", near(until.totalPnlSol, 0.4, 1e-9));
+
+    const both = analyze(trades, [], [2, 5, 10], true, {
+      since: "2026-01-04T00:00:00.000Z",
+      until: "2026-01-06T00:00:00.000Z",
+    });
+    check("both bounds isolate the middle position", both.closedPositions === 1);
+    check("both bounds -> only its P&L", near(both.totalPnlSol, 0.5));
+    check("window echoed back in the report", both.window.since === "2026-01-04T00:00:00.000Z");
+
+    // Boundary is inclusive at both ends.
+    const edge = analyze(trades, [], [2, 5, 10], true, {
+      since: "2026-01-05T05:00:00.000Z",
+      until: "2026-01-05T05:00:00.000Z",
+    });
+    check("a close exactly on both bounds is included", edge.closedPositions === 1);
+
+    // Decisions are filtered too.
+    const decisions: DecisionRecord[] = [
+      { ts: "2026-01-01T00:00:00.000Z", decision: "SKIP", reasons: ["old"] },
+      { ts: "2026-01-05T00:00:00.000Z", decision: "PASS", reasons: [] },
+    ];
+    const dFiltered = analyze([], decisions, [2, 5, 10], true, { since: "2026-01-04T00:00:00.000Z" });
+    check("decisions outside the window are excluded", dFiltered.decisionsTotal === 1);
+    check("only the in-window PASS counted", dFiltered.decisionsPassed === 1 && dFiltered.decisionsSkipped === 0);
+  }
+
+  // ---------------------------------------------------------------
+  console.log("\n-- isWithinWindow: fail-closed on unplaceable timestamps --");
+  {
+    check("no bounds -> everything passes", isWithinWindow(undefined, {}) === true);
+    check("missing ts with a bound set -> excluded, not assumed inside", isWithinWindow(null, { since: "2026-01-01" }) === false);
+    check("unparseable ts with a bound set -> excluded", isWithinWindow("not-a-date", { since: "2026-01-01" }) === false);
+    check("in range -> included", isWithinWindow("2026-01-05T00:00:00.000Z", { since: "2026-01-01", until: "2026-01-10" }) === true);
+    check("before since -> excluded", isWithinWindow("2025-12-31T00:00:00.000Z", { since: "2026-01-01" }) === false);
+    check("after until -> excluded", isWithinWindow("2026-02-01T00:00:00.000Z", { until: "2026-01-10" }) === false);
   }
 
   console.log(`\nTotal: ${pass} passed, ${fail} failed`);

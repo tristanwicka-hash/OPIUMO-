@@ -5,6 +5,11 @@
  *   npm run report:paper -- --trades logs/paper-trades.jsonl --decisions logs/decisions.jsonl
  *   npm run report:paper -- --out reports/my-report.md
  *   npm run report:paper -- --real          # analyse trades.jsonl instead of paper
+ *   npm run report:paper -- --since 2026-01-05 --until 2026-01-06
+ *
+ * --since/--until are inclusive ISO dates. Positions are placed in the window
+ * by CLOSE time (open positions by open time), so a trade that spans a
+ * boundary is counted once, on the day it finished.
  *
  * Note the space after `--` when passing flags through npm.
  *
@@ -23,6 +28,7 @@ import {
   PerformanceReport,
   TradeRecord,
   DecisionRecord,
+  DateWindow,
 } from "../src/analysis/paperPerformance";
 import {
   summarizeFundingCapture,
@@ -41,6 +47,7 @@ interface Args {
   fundingHistoryPath: string;
   outPath: string;
   paperOnly: boolean;
+  window: DateWindow;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -57,6 +64,7 @@ function parseArgs(argv: string[]): Args {
     fundingHistoryPath: get("--funding-history") ?? "logs/funding-arb-history.json",
     outPath: get("--out") ?? path.join("reports", `${real ? "real" : "paper"}-performance-${stamp}.md`),
     paperOnly: !real,
+    window: { since: get("--since"), until: get("--until") },
   };
 }
 
@@ -146,6 +154,12 @@ function buildMarkdown(r: PerformanceReport, args: Args, notes: string[], fundin
   L.push(`Generated: ${new Date().toISOString()}`);
   L.push(`Trades:    \`${args.tradesPath}\``);
   L.push(`Decisions: \`${args.decisionsPath}\``);
+  if (args.window.since || args.window.until) {
+    L.push(`Window:    ${args.window.since ?? "start"} -> ${args.window.until ?? "now"} (inclusive, by close time)`);
+    if (r.positionsOutsideWindow > 0) {
+      L.push(`           ${r.positionsOutsideWindow} position(s) fell outside it and are excluded.`);
+    }
+  }
   L.push("");
 
   if (notes.length > 0) {
@@ -198,12 +212,36 @@ function buildMarkdown(r: PerformanceReport, args: Args, notes: string[], fundin
   }
   L.push("");
 
+  L.push("### What each tier actually earned");
+  L.push("");
+  L.push(
+    "Hit rate alone cannot tell you whether a tier earns its keep - a tier can " +
+      "fire often and contribute almost nothing. Share is of gross profit (winning " +
+      "legs only), so a tier at a low share is a candidate for retuning.",
+  );
+  L.push("");
+  L.push("| Tier | Sells | Total P&L | Avg per sell | Share of gross profit |");
+  L.push("|---|---|---|---|---|");
+  for (const t of r.ladderTierPnl) {
+    L.push(
+      `| ${t.tier}x | ${t.sells} | ${t.totalPnlSol.toFixed(6)} SOL | ` +
+        `${t.averagePnlSol === null ? "n/a" : t.averagePnlSol.toFixed(6) + " SOL"} | ` +
+        `${n(t.shareOfGrossProfitPercent, 1, "%")} |`,
+    );
+  }
+  L.push("");
+
   L.push("## How positions were closed");
   L.push("");
-  L.push("| Exit kind | Positions | % of closed |");
-  L.push("|---|---|---|");
+  L.push("| Exit kind | Positions | % of closed | Sells | Total P&L | Avg per sell |");
+  L.push("|---|---|---|---|---|---|");
   for (const kind of Object.keys(r.exitKindCounts) as Array<keyof typeof r.exitKindCounts>) {
-    L.push(`| ${kind} | ${r.exitKindCounts[kind]} | ${r.exitKindPercentOfClosed[kind].toFixed(1)}% |`);
+    const s = r.exitKindPnl[kind];
+    L.push(
+      `| ${kind} | ${r.exitKindCounts[kind]} | ${r.exitKindPercentOfClosed[kind].toFixed(1)}% | ` +
+        `${s.sells} | ${s.totalPnlSol.toFixed(6)} SOL | ` +
+        `${s.averagePnlSol === null ? "n/a" : s.averagePnlSol.toFixed(6) + " SOL"} |`,
+    );
   }
   L.push("");
   if (r.exitKindCounts["unclassified"] > 0) {
@@ -320,7 +358,7 @@ function main() {
   if (fundingNote) notes.push(fundingNote);
   const funding = perps.missing ? null : summarizeFundingCapture(perps.records, samples);
 
-  const report = analyze(trades.records, decisions.records, DEFAULT_LADDER_TIERS, args.paperOnly);
+  const report = analyze(trades.records, decisions.records, DEFAULT_LADDER_TIERS, args.paperOnly, args.window);
   const markdown = buildMarkdown(report, args, notes, funding);
 
   fs.mkdirSync(path.dirname(args.outPath), { recursive: true });
@@ -328,6 +366,9 @@ function main() {
 
   // Console summary - the same headline numbers, so you don't have to open the file.
   console.log(`=== ${args.paperOnly ? "Paper" : "Real"}-trading performance ===`);
+  if (args.window.since || args.window.until) {
+    console.log(`  Window:            ${args.window.since ?? "start"} -> ${args.window.until ?? "now"} (${report.positionsOutsideWindow} excluded)`);
+  }
   for (const note of notes) console.log(`  note: ${note}`);
   console.log(`  Closed positions:  ${report.closedPositions} (${report.openPositions} still open)`);
   console.log(`  Win rate:          ${n(report.winRatePercent, 1, "%")}  (${report.wins}W / ${report.losses}L)`);
@@ -338,7 +379,9 @@ function main() {
   console.log(`  Max drawdown:      ${report.maxDrawdownSol.toFixed(6)} SOL (${n(report.maxDrawdownPercent, 1, "%")} of peak)`);
   console.log(`  Time in position:  median ${n(report.medianHoldingHours, 2, "h")}, max ${n(report.maxHoldingHours, 2, "h")}`);
   for (const t of report.ladderTiers) {
-    console.log(`  ${`Ladder ${t.tier}x hit:`.padEnd(18)} ${t.positionsHit} (${t.percentOfClosed.toFixed(1)}% of closed)`);
+    const pnl = report.ladderTierPnl.find((x) => x.tier === t.tier);
+    const earned = pnl ? `, earned ${pnl.totalPnlSol.toFixed(6)} SOL (${n(pnl.shareOfGrossProfitPercent, 0, "%")} of gross)` : "";
+    console.log(`  ${`Ladder ${t.tier}x hit:`.padEnd(18)} ${t.positionsHit} (${t.percentOfClosed.toFixed(1)}% of closed)${earned}`);
   }
   console.log(`  Decisions:         ${report.decisionsPassed} PASS / ${report.decisionsSkipped} SKIP`);
   if (funding && funding.closes > 0) {
