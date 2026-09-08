@@ -208,6 +208,10 @@ export async function closePerpPosition(
     exitPrice,
     notionalUsd: position.notionalUsd,
     pnlUsd: position.unrealizedPnlUsd,
+    // Read from the snapshot taken just above, before the close landed - the
+    // position is gone from the account afterwards, so it cannot be read back.
+    feesAndFundingUsd: position.feesAndFundingUsd,
+    unsettledFundingUsd: position.unsettledFundingUsd,
     reason,
     txSignature,
   });

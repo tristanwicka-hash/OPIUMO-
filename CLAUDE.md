@@ -72,8 +72,8 @@ Individual suites: `test:rpc`, `test:watcher`, `test:metrics`,
 ## Testing conventions
 
 - **Offline suites** are pure/deterministic (mocked `Connection`, mocked
-  `global.fetch`, or pure functions). They must always pass. 318 assertions
-  as of the paper-performance analyzer (239 as of Part 10).
+  `global.fetch`, or pure functions). They must always pass. 336 assertions
+  as of the funding-capture work (239 as of Part 10).
 - **Most suites need `RPC_URL` set** even when offline: `src/data/tokenMetrics.ts`
   calls `loadConfig()` at module load, and validation throws without it. There
   is no `.env` in the repo. `src/analysis/` is deliberately config-free and

@@ -1,4 +1,13 @@
-import { DriftClient, User, BASE_PRECISION, QUOTE_PRECISION, MARGIN_PRECISION, convertToNumber } from "@drift-labs/sdk";
+import {
+  DriftClient,
+  User,
+  BASE_PRECISION,
+  QUOTE_PRECISION,
+  MARGIN_PRECISION,
+  convertToNumber,
+  calculateFeesAndFundingPnl,
+  calculateUnsettledFundingPnl,
+} from "@drift-labs/sdk";
 import { loadConfig } from "../config";
 import { resolveMarketSymbol } from "./marketRegistry";
 import { AccountSnapshot, OpenPerpPosition, PerpDirection } from "./types";
@@ -32,6 +41,23 @@ export function getAccountSnapshot(driftClient: DriftClient, subAccountId: numbe
       const symbol = resolveMarketSymbol(config.perps.env, p.marketIndex) ?? `market-${p.marketIndex}`;
       const positionPnlUsd = convertToNumber(user.getUnrealizedPNL(true, p.marketIndex), QUOTE_PRECISION);
 
+      // Carry side of the trade, isolated from price movement, using Drift's own
+      // math rather than re-deriving it. Wrapped because getPerpMarketAccount()
+      // returns undefined for an unloaded market and the SDK helpers throw on
+      // malformed account data - either way we want null ("couldn't read"), not a
+      // zero that would read as "collected nothing".
+      let feesAndFundingUsd: number | null = null;
+      let unsettledFundingUsd: number | null = null;
+      try {
+        const marketAccount = driftClient.getPerpMarketAccount(p.marketIndex);
+        if (marketAccount) {
+          feesAndFundingUsd = convertToNumber(calculateFeesAndFundingPnl(marketAccount, p), QUOTE_PRECISION);
+          unsettledFundingUsd = convertToNumber(calculateUnsettledFundingPnl(marketAccount, p), QUOTE_PRECISION);
+        }
+      } catch {
+        // leave both null - unreadable is not zero
+      }
+
       return {
         market: symbol,
         marketIndex: p.marketIndex,
@@ -40,6 +66,8 @@ export function getAccountSnapshot(driftClient: DriftClient, subAccountId: numbe
         notionalUsd,
         entryPrice,
         unrealizedPnlUsd: positionPnlUsd,
+        feesAndFundingUsd,
+        unsettledFundingUsd,
       };
     });
 

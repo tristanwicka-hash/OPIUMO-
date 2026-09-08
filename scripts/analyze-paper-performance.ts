@@ -24,6 +24,12 @@ import {
   TradeRecord,
   DecisionRecord,
 } from "../src/analysis/paperPerformance";
+import {
+  summarizeFundingCapture,
+  FundingCaptureSummary,
+  FundingSampleLike,
+  PerpsCloseRecord,
+} from "../src/analysis/fundingCapture";
 
 /** Ladder tiers as shipped in config/default.json. Passed in rather than read, to keep the analyzer pure and this script config-free. */
 const DEFAULT_LADDER_TIERS = [2, 5, 10];
@@ -31,6 +37,8 @@ const DEFAULT_LADDER_TIERS = [2, 5, 10];
 interface Args {
   tradesPath: string;
   decisionsPath: string;
+  perpsPath: string;
+  fundingHistoryPath: string;
   outPath: string;
   paperOnly: boolean;
 }
@@ -45,6 +53,8 @@ function parseArgs(argv: string[]): Args {
   return {
     tradesPath: get("--trades") ?? (real ? "logs/trades.jsonl" : "logs/paper-trades.jsonl"),
     decisionsPath: get("--decisions") ?? "logs/decisions.jsonl",
+    perpsPath: get("--perps") ?? "logs/perps-trades.jsonl",
+    fundingHistoryPath: get("--funding-history") ?? "logs/funding-arb-history.json",
     outPath: get("--out") ?? path.join("reports", `${real ? "real" : "paper"}-performance-${stamp}.md`),
     paperOnly: !real,
   };
@@ -71,10 +81,65 @@ function readJsonl<T>(filePath: string): { records: T[]; missing: boolean; badLi
   return { records, missing: false, badLines };
 }
 
+/**
+ * The funding history file is keyed by Drift marketIndex ("0"), while the perps
+ * trade log names markets by symbol ("SOL-PERP"). Rather than pull in the config
+ * (which would drag RPC_URL validation into an offline tool), map them here:
+ * with a single market in the history - the shipped configuration - its samples
+ * apply to every market in the log. With several, an explicit --funding-market-map
+ * is required rather than guessing which index is which symbol.
+ */
+function loadFundingSamples(
+  historyPath: string,
+  marketsInLog: string[],
+  explicitMap: string | undefined,
+): { samples: Record<string, FundingSampleLike[]>; note: string | null } {
+  if (!fs.existsSync(historyPath)) return { samples: {}, note: null };
+  let parsed: Record<string, FundingSampleLike[]>;
+  try {
+    parsed = JSON.parse(fs.readFileSync(historyPath, "utf-8"));
+  } catch {
+    return { samples: {}, note: `Funding history \`${historyPath}\` could not be parsed - funding capture skipped.` };
+  }
+
+  const indices = Object.keys(parsed);
+  if (indices.length === 0) return { samples: {}, note: null };
+
+  if (explicitMap) {
+    const out: Record<string, FundingSampleLike[]> = {};
+    for (const pair of explicitMap.split(",")) {
+      const [symbol, idx] = pair.split("=").map((x) => x.trim());
+      if (symbol && idx && parsed[idx]) out[symbol] = parsed[idx];
+    }
+    return { samples: out, note: null };
+  }
+
+  if (indices.length === 1) {
+    const only = parsed[indices[0]];
+    const out: Record<string, FundingSampleLike[]> = {};
+    for (const m of marketsInLog) out[m] = only;
+    return {
+      samples: out,
+      note:
+        marketsInLog.length > 0
+          ? `Funding history holds one market (index ${indices[0]}); its settlements were applied to ${marketsInLog.join(", ")}.`
+          : null,
+    };
+  }
+
+  return {
+    samples: {},
+    note:
+      `Funding history holds ${indices.length} markets (indices ${indices.join(", ")}) and no ` +
+      "--funding-market-map was given, so funding capture was skipped rather than guessing " +
+      'which index is which symbol. Pass e.g. --funding-market-map "SOL-PERP=0".',
+  };
+}
+
 const n = (v: number | null, digits = 2, suffix = ""): string =>
   v === null ? "unknown" : `${v.toFixed(digits)}${suffix}`;
 
-function buildMarkdown(r: PerformanceReport, args: Args, notes: string[]): string {
+function buildMarkdown(r: PerformanceReport, args: Args, notes: string[], funding: FundingCaptureSummary | null): string {
   const L: string[] = [];
   L.push(`# ${args.paperOnly ? "Paper" : "Real"}-trading performance report`);
   L.push("");
@@ -152,15 +217,45 @@ function buildMarkdown(r: PerformanceReport, args: Args, notes: string[]): strin
 
   L.push("## Funding-rate arbitrage");
   L.push("");
-  L.push(
-    "**Realized funding capture is not reportable yet.** `PerpsTradeLog.recordClose()` " +
-      "records only `pnlUsd`, which blends price movement, fees and funding into one " +
-      "number with no way to separate them. Theoretical capture *is* computable from " +
-      "`logs/funding-arb-history.json` via `src/analysis/fundingCapture.ts`, but a " +
-      "realized-vs-theoretical rate needs one additive field (`fundingCollectedUsd`) on " +
-      "the perps close record. See the session log for the recommendation.",
-  );
-  L.push("");
+  if (!funding || funding.closes === 0) {
+    L.push("No closed perp positions found in `" + args.perpsPath + "` - nothing to measure yet.");
+    L.push("");
+  } else {
+    L.push("| Metric | Value |");
+    L.push("|---|---|");
+    L.push(`| Closed perp positions | ${funding.closes} |`);
+    L.push(`| ...with a realized figure | ${funding.closesWithRealized} |`);
+    L.push(`| Theoretical funding (gross) | ${funding.totalTheoreticalUsd === null ? "unknown" : "$" + funding.totalTheoreticalUsd.toFixed(4)} |`);
+    L.push(`| Realized fees + funding (net) | ${funding.totalRealizedUsd === null ? "unknown" : "$" + funding.totalRealizedUsd.toFixed(4)} |`);
+    L.push(`| **Capture rate** | **${n(funding.overallCaptureRatePercent, 1, "%")}** |`);
+    L.push("");
+    L.push(
+      "Capture rate is realized / theoretical. The realized figure comes from Drift's " +
+        "`calculateFeesAndFundingPnl()` and is **net of trading fees**, while the theoretical " +
+        "figure is **gross** funding implied by the observed rates. A rate below 100% is " +
+        "usually fees eating the carry - which is exactly what `estimatedRoundTripCostBps` " +
+        "exists to guard against - not a measurement error.",
+    );
+    L.push("");
+    L.push("| Market | Closed | Hours | Settlements | Theoretical | Realized | Capture |");
+    L.push("|---|---|---|---|---|---|---|");
+    for (const c of funding.perClose) {
+      L.push(
+        `| ${c.market} | ${c.closedAt ?? "?"} | ${c.holdingHours.toFixed(1)} | ${c.settlementsInWindow} | ` +
+          `${c.theoreticalUsd === null ? "unknown" : "$" + c.theoreticalUsd.toFixed(4)} | ` +
+          `${c.realizedUsd === null ? "unknown" : "$" + c.realizedUsd.toFixed(4)} | ` +
+          `${n(c.captureRatePercent, 1, "%")} |`,
+      );
+    }
+    L.push("");
+    const unexplained = funding.perClose.filter((c) => c.unavailableReason !== null);
+    if (unexplained.length > 0) {
+      L.push("Why some rows show `unknown`:");
+      L.push("");
+      for (const c of unexplained) L.push(`- **${c.market}** (${c.closedAt ?? "?"}): ${c.unavailableReason}`);
+      L.push("");
+    }
+  }
 
   L.push("## Filter decisions");
   L.push("");
@@ -213,8 +308,20 @@ function main() {
   if (trades.badLines > 0) notes.push(`${trades.badLines} unparseable line(s) in the trade log were skipped.`);
   if (decisions.badLines > 0) notes.push(`${decisions.badLines} unparseable line(s) in the decision log were skipped.`);
 
+  // Perps / funding-arb side. Independent of the spot logs above: a run may have
+  // one, both, or neither.
+  const perps = readJsonl<PerpsCloseRecord>(args.perpsPath);
+  if (perps.badLines > 0) notes.push(`${perps.badLines} unparseable line(s) in the perps log were skipped.`);
+  const marketsInLog = [...new Set(perps.records.map((r) => r.market).filter((m): m is string => !!m))];
+  const explicitMap = process.argv.includes("--funding-market-map")
+    ? process.argv[process.argv.indexOf("--funding-market-map") + 1]
+    : undefined;
+  const { samples, note: fundingNote } = loadFundingSamples(args.fundingHistoryPath, marketsInLog, explicitMap);
+  if (fundingNote) notes.push(fundingNote);
+  const funding = perps.missing ? null : summarizeFundingCapture(perps.records, samples);
+
   const report = analyze(trades.records, decisions.records, DEFAULT_LADDER_TIERS, args.paperOnly);
-  const markdown = buildMarkdown(report, args, notes);
+  const markdown = buildMarkdown(report, args, notes, funding);
 
   fs.mkdirSync(path.dirname(args.outPath), { recursive: true });
   fs.writeFileSync(args.outPath, markdown);
@@ -234,6 +341,10 @@ function main() {
     console.log(`  ${`Ladder ${t.tier}x hit:`.padEnd(18)} ${t.positionsHit} (${t.percentOfClosed.toFixed(1)}% of closed)`);
   }
   console.log(`  Decisions:         ${report.decisionsPassed} PASS / ${report.decisionsSkipped} SKIP`);
+  if (funding && funding.closes > 0) {
+    console.log(`  Perp closes:       ${funding.closes} (${funding.closesWithRealized} with a realized figure)`);
+    console.log(`  Funding capture:   ${n(funding.overallCaptureRatePercent, 1, "%")} (realized net of fees / theoretical gross)`);
+  }
   console.log(`\n  Report written to: ${args.outPath}`);
 }
 

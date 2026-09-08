@@ -37,6 +37,21 @@ export class PerpsTradeLog {
     exitPrice: number;
     notionalUsd: number;
     pnlUsd: number;
+    /**
+     * Lifetime fees AND funding for the position, USD. Required but nullable
+     * ON PURPOSE: a caller must consciously decide, and an optional field
+     * would let a call site silently omit it and write `undefined`.
+     *
+     * pnlUsd on its own cannot answer "did the carry actually pay?" - it
+     * blends price movement, fees and funding into one number. This is the
+     * field that makes realized-vs-theoretical funding capture computable
+     * (see src/analysis/fundingCapture.ts).
+     *
+     * null means "couldn't read it", never "it was zero".
+     */
+    feesAndFundingUsd: number | null;
+    /** The unsettled slice of the above, so settled-only is derivable. Null when unreadable. */
+    unsettledFundingUsd: number | null;
     reason: string;
     txSignature: string;
   }) {

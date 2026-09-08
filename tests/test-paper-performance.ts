@@ -18,7 +18,7 @@ import {
   TradeRecord,
   DecisionRecord,
 } from "../src/analysis/paperPerformance";
-import { computeFundingCapture } from "../src/analysis/fundingCapture";
+import { computeFundingCapture, summarizeFundingCapture } from "../src/analysis/fundingCapture";
 
 let pass = 0;
 let fail = 0;
@@ -292,7 +292,7 @@ async function main() {
   }
 
   // ---------------------------------------------------------------
-  console.log("\n-- computeFundingCapture: theoretical yes, realized honestly null --");
+  console.log("\n-- computeFundingCapture: theoretical --");
   {
     const openSec = 1_700_000_000;
     const closeSec = openSec + 10 * 3600; // 10 hours
@@ -309,9 +309,6 @@ async function main() {
     check("average hourly rate = 0.02%", near(f.averageHourlyRatePercent, 0.02));
     check("holding hours = 10", near(f.holdingHours, 10));
     check("theoretical funding = $2.00", near(f.theoreticalUsd, 2, 1e-9));
-    check("realized funding is null - it is genuinely not logged", f.realizedUsd === null);
-    check("capture rate is null, not a fabricated 100%", f.captureRatePercent === null);
-    check("an explanation is attached rather than a bare blank", f.realizedUnavailableReason.length > 0);
 
     // Boundary: a settlement exactly at open or close still counts.
     const edge = computeFundingCapture(
@@ -326,6 +323,99 @@ async function main() {
     const none = computeFundingCapture([], openSec, closeSec, 1000);
     check("no settlements -> theoretical null, not a misleading 0", none.theoreticalUsd === null);
     check("no settlements -> average rate null", none.averageHourlyRatePercent === null);
+  }
+
+  // ---------------------------------------------------------------
+  console.log("\n-- computeFundingCapture: realized and capture rate --");
+  {
+    const openSec = 1_700_000_000;
+    const closeSec = openSec + 10 * 3600;
+    // avg 0.02%/hr over 10h on 1000 USD -> theoretical $2.00
+    const samples = [
+      { observedAt: 0, settlementTs: openSec + 3600, shortRateHourlyPercent: 0.01 },
+      { observedAt: 0, settlementTs: openSec + 7200, shortRateHourlyPercent: 0.03 },
+    ];
+
+    // Realized $1.50 against theoretical $2.00 -> 75% capture (fees ate the rest).
+    const f = computeFundingCapture(samples, openSec, closeSec, 1000, 1.5);
+    check("realized figure carried through", near(f.realizedUsd, 1.5));
+    check("capture rate = 75%", near(f.captureRatePercent, 75, 1e-9));
+    check("no unavailable reason when both sides known", f.unavailableReason === null);
+
+    // Realized can exceed theoretical (rates moved between settlements).
+    const over = computeFundingCapture(samples, openSec, closeSec, 1000, 2.5);
+    check("realized above theoretical -> capture rate 125%, not clamped", near(over.captureRatePercent, 125, 1e-9));
+
+    // A negative realized (fees exceeded funding) is a real, reportable outcome.
+    const neg = computeFundingCapture(samples, openSec, closeSec, 1000, -0.5);
+    check("negative realized -> negative capture rate, not hidden", near(neg.captureRatePercent, -25, 1e-9));
+
+    // Missing realized -> null rate WITH an explanation, never a fabricated 100%.
+    const noReal = computeFundingCapture(samples, openSec, closeSec, 1000, null);
+    check("missing realized -> capture rate null", noReal.captureRatePercent === null);
+    check("missing realized -> explanation attached", (noReal.unavailableReason ?? "").includes("feesAndFundingUsd"));
+
+    // Realized known but no settlements -> theoretical unknown, so no rate.
+    const noTheo = computeFundingCapture([], openSec, closeSec, 1000, 1.5);
+    check("realized without theoretical -> capture rate null", noTheo.captureRatePercent === null);
+    check("realized without theoretical -> explanation names the missing side", (noTheo.unavailableReason ?? "").includes("no funding settlements"));
+
+    // Division-by-zero guard: a 0% rate means theoretical 0.
+    const zeroRate = computeFundingCapture(
+      [{ observedAt: 0, settlementTs: openSec + 3600, shortRateHourlyPercent: 0 }],
+      openSec,
+      closeSec,
+      1000,
+      0.5,
+    );
+    check("theoretical exactly 0 -> capture rate null, not Infinity", zeroRate.captureRatePercent === null);
+    check("theoretical 0 -> explanation says the rate is undefined", (zeroRate.unavailableReason ?? "").includes("undefined"));
+  }
+
+  // ---------------------------------------------------------------
+  console.log("\n-- summarizeFundingCapture: pairing opens with closes across a log --");
+  {
+    const t0 = Date.UTC(2026, 0, 1, 0, 0, 0);
+    const iso = (ms: number) => new Date(ms).toISOString();
+    const openSec = Math.floor(t0 / 1000);
+
+    const samplesByMarket = {
+      "SOL-PERP": [
+        { observedAt: 0, settlementTs: openSec + 3600, shortRateHourlyPercent: 0.01 },
+        { observedAt: 0, settlementTs: openSec + 7200, shortRateHourlyPercent: 0.03 },
+      ],
+    };
+    const records = [
+      { ts: iso(t0), event: "open", market: "SOL-PERP", notionalUsd: 1000 },
+      { ts: iso(t0 + 10 * 3600_000), event: "close", market: "SOL-PERP", notionalUsd: 1000, feesAndFundingUsd: 1.5 },
+    ];
+    const sum = summarizeFundingCapture(records, samplesByMarket);
+    check("one close summarized", sum.closes === 1);
+    check("close carried a realized figure", sum.closesWithRealized === 1);
+    check("total realized = $1.50", near(sum.totalRealizedUsd, 1.5));
+    check("total theoretical = $2.00", near(sum.totalTheoreticalUsd, 2, 1e-9));
+    check("overall capture rate = 75%", near(sum.overallCaptureRatePercent, 75, 1e-9));
+
+    // A close with no matching open has an unknowable window - skipped, not guessed.
+    const orphan = summarizeFundingCapture(
+      [{ ts: iso(t0 + 3600_000), event: "close", market: "SOL-PERP", notionalUsd: 1000, feesAndFundingUsd: 1 }],
+      samplesByMarket,
+    );
+    check("close with no matching open is skipped, not guessed", orphan.closes === 0);
+
+    // A close predating the field contributes nothing to the aggregate rate.
+    const legacy = summarizeFundingCapture(
+      [
+        { ts: iso(t0), event: "open", market: "SOL-PERP", notionalUsd: 1000 },
+        { ts: iso(t0 + 10 * 3600_000), event: "close", market: "SOL-PERP", notionalUsd: 1000 },
+      ],
+      samplesByMarket,
+    );
+    check("legacy close (no field) still summarized", legacy.closes === 1);
+    check("legacy close counted as missing realized", legacy.closesWithRealized === 0);
+    check("legacy close cannot drag the aggregate rate", legacy.overallCaptureRatePercent === null);
+
+    check("empty log -> no closes", summarizeFundingCapture([], {}).closes === 0);
   }
 
   console.log(`\nTotal: ${pass} passed, ${fail} failed`);

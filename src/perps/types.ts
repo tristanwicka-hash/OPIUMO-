@@ -45,4 +45,21 @@ export interface OpenPerpPosition {
   notionalUsd: number;
   entryPrice: number;
   unrealizedPnlUsd: number;
+  /**
+   * Lifetime fees AND funding for this position, in USD, from Drift's own
+   * calculateFeesAndFundingPnl() (settled + unsettled). This is what lets a
+   * funding-arb result be judged: unrealizedPnlUsd blends price movement with
+   * funding, whereas this isolates the carry side of the trade.
+   *
+   * It is fees AND funding combined, not funding alone - Drift derives it from
+   * quoteBreakEvenAmount - quoteEntryAmount, which nets trading fees in. For a
+   * funding-arb position that is the honest number to judge anyway, since the
+   * cost gate exists precisely to check funding beats fees.
+   *
+   * null means "couldn't read it" (e.g. the market account was unavailable),
+   * never "it was zero" - the same null-vs-false rule used everywhere else.
+   */
+  feesAndFundingUsd: number | null;
+  /** The not-yet-settled slice of the above, so settled-only can be derived by subtraction. Null when unreadable. */
+  unsettledFundingUsd: number | null;
 }
