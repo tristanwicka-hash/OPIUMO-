@@ -106,8 +106,21 @@ trading math.
 
 Longer-form context - strategy reasoning, tuning decisions, trade journal,
 competitor research, session handoffs - lives in an Obsidian vault kept
-**outside this repo** (typically `../vault/` relative to the repo root, so
-it is never committed to a public repo). If that folder is present in the
-workspace, read `../vault/00-Index.md` when you need background on *why* a
-threshold or design choice is the way it is. Starter templates for that
-vault are in `docs/vault-starter/`.
+**outside this repo**, as a **sibling directory** of it, so it is never
+committed to a public repo. The expected layout, wherever the repo is
+checked out:
+
+```
+opiumo/                 <- any parent directory
+├── OPIUMO-/            <- this repo
+└── Vault/              <- the Obsidian vault (private, never committed)
+```
+
+So from the repo root the vault is `../Vault`. If it is present in the
+workspace, read `../Vault/00-Index.md` when you need background on *why* a
+threshold or design choice is the way it is.
+
+If `../Vault` does not resolve, look in the parent directory for a sibling
+whose name contains "Vault" or "vault" (case-insensitive) before concluding
+there is no vault - the folder has been named both ways. Starter templates
+for the vault are in `docs/vault-starter/`.
