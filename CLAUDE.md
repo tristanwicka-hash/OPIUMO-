@@ -59,6 +59,7 @@ npm run perps        # run the perps/funding-arb track from source
 npm test             # every test suite
 npm run typecheck    # types only, no build
 npm run build        # compile to dist/  (entry points are dist/src/*.js)
+npm run report:paper # paper-trading performance report -> reports/*.md (offline)
 ```
 
 Individual suites: `test:rpc`, `test:watcher`, `test:metrics`,
@@ -66,13 +67,17 @@ Individual suites: `test:rpc`, `test:watcher`, `test:metrics`,
 `test:funding-arb-signals`, `test:funding-arb-live`, `test:trading-signals`,
 `test:trading-engine-gating`, `test:trading-retry`,
 `test:trading-reconciliation`, `test:trading-human-units`,
-`test:trading-live`, `test:paper-trading`.
+`test:trading-live`, `test:paper-trading`, `test:paper-performance`.
 
 ## Testing conventions
 
 - **Offline suites** are pure/deterministic (mocked `Connection`, mocked
-  `global.fetch`, or pure functions). They must always pass. 239 assertions
-  as of Part 10.
+  `global.fetch`, or pure functions). They must always pass. 318 assertions
+  as of the paper-performance analyzer (239 as of Part 10).
+- **Most suites need `RPC_URL` set** even when offline: `src/data/tokenMetrics.ts`
+  calls `loadConfig()` at module load, and validation throws without it. There
+  is no `.env` in the repo. `src/analysis/` is deliberately config-free and
+  runs with nothing set.
 - **Live suites** (`test:rpc`, `test:trading-live`, `test:perps-connection`,
   `test:funding-arb-live`) need real network access to Solana/Jupiter/Drift.
   They were written in a sandbox with **zero** network access to those

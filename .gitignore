@@ -10,6 +10,10 @@ data/*.jsonl
 *.log
 .DS_Store
 
+# Generated performance reports - contain P&L, and this repo is public
+reports/*
+!reports/.gitkeep
+
 # Obsidian vault - private notes, never commit (this repo is public)
 vault/
 .obsidian/

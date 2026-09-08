@@ -12,6 +12,7 @@
     "perps": "ts-node src/perpsIndex.ts",
     "start:perps": "node dist/src/perpsIndex.js",
     "verify:raydium-tx": "ts-node scripts/verify-raydium-tx.ts",
+    "report:paper": "ts-node scripts/analyze-paper-performance.ts",
     "test": "ts-node tests/run-all.ts",
     "test:rpc": "ts-node tests/test-rpc-connection.ts",
     "test:watcher": "ts-node tests/test-watcher.ts",
@@ -29,6 +30,7 @@
     "test:trading-human-units": "ts-node tests/test-trading-human-units.ts",
     "test:trading-live": "ts-node tests/test-trading-live.ts",
     "test:paper-trading": "ts-node tests/test-paper-trading.ts",
+    "test:paper-performance": "ts-node tests/test-paper-performance.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

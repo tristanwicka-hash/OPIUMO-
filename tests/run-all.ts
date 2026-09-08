@@ -25,6 +25,7 @@ const suites = [
   { name: "Spot sniper human-unit conversions (offline)", script: "tests/test-trading-human-units.ts" },
   { name: "Spot sniper Jupiter quote (live)", script: "tests/test-trading-live.ts" },
   { name: "Paper trading mode (Part 10, offline)", script: "tests/test-paper-trading.ts" },
+  { name: "Paper-trading performance analyzer (offline)", script: "tests/test-paper-performance.ts" },
 ];
 
 let anyFailed = false;
