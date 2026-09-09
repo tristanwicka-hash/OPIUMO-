@@ -29,6 +29,24 @@ function check(name: string, cond: boolean, detail?: string) {
   }
 }
 
+/** Fixture mints this suite could ever emit into a log. */
+const FIXTURE_PREFIX = "MINT_";
+const countFixtures = (contents: string): number =>
+  contents.split("\n").filter((l) => l.includes(`"mint":"${FIXTURE_PREFIX}`) || l.includes(`"mint": "${FIXTURE_PREFIX}`)).length;
+
+/**
+ * Snapshot of how many fixture rows the production log ALREADY had, taken before
+ * this suite constructs anything. The end-of-suite guard compares against this
+ * rather than against zero.
+ */
+const prodFixturesBefore = (() => {
+  try {
+    return countFixtures(fs.readFileSync("logs/outcomes.jsonl", "utf8"));
+  } catch {
+    return 0;
+  }
+})();
+
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "opiumo-outcome-"));
 // Never touches the network: no checkpoint in these tests is ever due while the
 // test runs, so runCheck() (the only thing that calls the RPC) is never reached.
@@ -237,19 +255,34 @@ async function main() {
     check("no state file created", !fs.existsSync(statePath));
   }
 
-  console.log("\n=== Tests never write to the production outcome log ===\n");
+  console.log("\n=== This suite never writes to the production outcome log ===\n");
   {
-    // The guard that stops this suite from poisoning the dataset it exists to
-    // protect. The overdue case above DOES exercise the write path, so without a
-    // log override it files MINT_OVERDUE into logs/outcomes.jsonl and the analysis
-    // reads it back as a real observation.
+    // The guard that stops this suite poisoning the dataset it exists to protect.
+    // The overdue case above genuinely exercises the write path, so without a log
+    // override it files MINT_OVERDUE into logs/outcomes.jsonl and the analysis
+    // later reads it back as a real observation.
+    //
+    // It asserts on the DELTA, not on the file's contents. An earlier version
+    // checked "does the production log contain a fixture mint", which failed
+    // forever once one historical fixture row existed - even after the leak was
+    // fixed. A guard that stays red for a reason nobody can clear is a guard that
+    // gets deleted, which is worse than having none. What matters is whether THIS
+    // run added anything.
     const prodLog = "logs/outcomes.jsonl";
-    const contents = fs.existsSync(prodLog) ? fs.readFileSync(prodLog, "utf8") : "";
+    const after = fs.existsSync(prodLog) ? fs.readFileSync(prodLog, "utf8") : "";
+    const afterCount = countFixtures(after);
     check(
-      "no fixture mint reached logs/outcomes.jsonl",
-      !contents.includes("MINT_OVERDUE") && !contents.includes("MINT_LEGACY") && !contents.includes("MINT_TRIM"),
-      "a fixture token is present in the production log - the override is not being applied"
+      "this run added no fixture rows to logs/outcomes.jsonl",
+      afterCount === prodFixturesBefore,
+      `production log had ${prodFixturesBefore} fixture row(s) before this suite and ${afterCount} after - ` +
+        `the log override is not being applied`
     );
+    if (prodFixturesBefore > 0) {
+      console.log(
+        `  note: ${prodFixturesBefore} fixture row(s) predate this fix and are still in ${prodLog}. ` +
+          `They are excluded by the analysis (no usable baseline) but should be cleaned out.`
+      );
+    }
   }
 
   console.log(`\nTotal: ${pass} passed, ${fail} failed`);
