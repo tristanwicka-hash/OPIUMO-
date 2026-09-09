@@ -106,6 +106,34 @@ export interface PollingConfig {
   maxQueuedTokens: number;
 }
 
+/**
+ * Delayed re-measurement of already-detected tokens. Measurement only - nothing
+ * here feeds a PASS/SKIP or a trade.
+ */
+export interface DelayProbeConfig {
+  enabled: boolean;
+  /** Ages (seconds after detection) at which to re-collect metrics. */
+  delaysSeconds: number[];
+  /** Concurrency for probe work, kept separate from the live pipeline's limit. */
+  maxConcurrentProbes: number;
+  maxQueuedProbes: number;
+  /** Cap on tokens with probes still scheduled, so timers can't accumulate without bound. */
+  maxPendingTokens: number;
+  /**
+   * Per-RPC-call timeout for probe collection, separate from
+   * polling.metricsFetchTimeoutMs. The live path is latency-critical and wants
+   * to give up fast; a probe is not, and giving up early wastes the whole
+   * observation AND the calls already spent on it.
+   */
+  fetchTimeoutMs: number;
+  /**
+   * Fraction of detected tokens to probe (0-1). Measuring every token exceeds
+   * the RPC rate limit; a sampled token is measured with FULL accuracy, so this
+   * trades coverage - never precision - for sustainability.
+   */
+  sampleRate: number;
+}
+
 export interface LoggingConfig {
   level: "minimal" | "info" | "debug";
   logDir: string;
@@ -114,6 +142,7 @@ export interface LoggingConfig {
   /** Where paper-trading fills are logged - kept entirely separate from tradesFile (real trades) so the two can never mix. */
   paperTradesFile: string;
   perpsTradesFile: string;
+  delayProbeFile: string;
   maxLogFileSizeMB: number;
 }
 
@@ -158,6 +187,7 @@ export interface AppConfig {
   filters: FiltersConfig;
   sources: SourcesConfig;
   polling: PollingConfig;
+  delayProbe: DelayProbeConfig;
   logging: LoggingConfig;
   perps: PerpsConfig;
   fundingArb: FundingArbConfig;
@@ -207,6 +237,20 @@ function validate(config: AppConfig): void {
   if (config.trading.maxOpenPositions <= 0) errors.push("trading.maxOpenPositions must be > 0");
   if (config.polling.maxConcurrentTokens <= 0) errors.push("polling.maxConcurrentTokens must be > 0 (set it to 1 to process one token at a time)");
   if (config.polling.maxQueuedTokens <= 0) errors.push("polling.maxQueuedTokens must be > 0");
+  if (config.delayProbe.enabled) {
+    if (!Array.isArray(config.delayProbe.delaysSeconds) || config.delayProbe.delaysSeconds.length === 0) {
+      errors.push("delayProbe.delaysSeconds must be a non-empty array of seconds (e.g. [30, 120, 300])");
+    } else if (config.delayProbe.delaysSeconds.some((d) => typeof d !== "number" || d <= 0)) {
+      errors.push("delayProbe.delaysSeconds must contain only positive numbers");
+    }
+    if (config.delayProbe.maxConcurrentProbes <= 0) errors.push("delayProbe.maxConcurrentProbes must be > 0");
+    if (config.delayProbe.maxQueuedProbes <= 0) errors.push("delayProbe.maxQueuedProbes must be > 0");
+    if (config.delayProbe.maxPendingTokens <= 0) errors.push("delayProbe.maxPendingTokens must be > 0");
+    if (config.delayProbe.fetchTimeoutMs <= 0) errors.push("delayProbe.fetchTimeoutMs must be > 0");
+    if (config.delayProbe.sampleRate <= 0 || config.delayProbe.sampleRate > 1) {
+      errors.push("delayProbe.sampleRate must be > 0 and <= 1 (fraction of detected tokens to probe)");
+    }
+  }
   if (config.trading.trailingStopActivateMultiple <= 1) errors.push("trading.trailingStopActivateMultiple must be > 1 (it's a multiple of entry price)");
   if (config.trading.trailingStopPercent <= 0 || config.trading.trailingStopPercent >= 100) {
     errors.push("trading.trailingStopPercent must be between 0 and 100");

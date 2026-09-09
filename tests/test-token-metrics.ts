@@ -71,6 +71,7 @@ function mockConnection(overrides: Partial<Record<string, (...args: any[]) => an
     getTokenAccountBalance: async () => ({ value: { uiAmount: 0 } }),
     getSignaturesForAddress: async () => [],
     getParsedTransaction: async () => null,
+    getParsedTransactions: async (sigs: string[]) => sigs.map(() => null),
   };
   return { ...base, ...overrides } as unknown as Connection;
 }
@@ -247,11 +248,16 @@ async function main() {
     const sigs = Array.from({ length: 8 }, (_, i) => ({ signature: `sig${i}` }));
     const conn = mockConnection({
       getSignaturesForAddress: async () => sigs,
-      getParsedTransaction: async (sig: string) => {
-        const i = parseInt(sig.replace("sig", ""), 10);
-        const wallet = wallets[i % wallets.length];
-        return { transaction: { message: { accountKeys: [{ pubkey: wallet }] } } };
-      },
+      // getWalletActivity now uses the BATCHED getParsedTransactions() - one
+      // request per chunk instead of one per signature. Same signatures, same
+      // fee payers, same counts; only the transport changed, which is why the
+      // assertions below are unchanged.
+      getParsedTransactions: async (sigList: string[]) =>
+        sigList.map((sig) => {
+          const i = parseInt(sig.replace("sig", ""), 10);
+          const wallet = wallets[i % wallets.length];
+          return { transaction: { message: { accountKeys: [{ pubkey: wallet }] } } };
+        }),
     });
     const activity = await getWalletActivity(conn, Keypair.generate().publicKey, 100);
     check("transactionCount matches signature count", activity.transactionCount === 8);

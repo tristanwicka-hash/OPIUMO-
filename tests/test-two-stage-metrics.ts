@@ -299,6 +299,23 @@ async function main() {
       !r.topSkipReasons.some((x) => x.reason.includes("queue full")));
   }
 
+  // ---------------------------------------------------------------
+  console.log("\n-- forceActivityMetrics: the delay probe must still see activity --");
+  {
+    // The probe measures uniqueWallets/transactionCount as a token ages. With
+    // Bug 1 outstanding every token fails a stage-1 rule, so the normal gate
+    // would skip stage 2 on 100% of them and the probe would record nothing.
+    // activitySkippedEarly must therefore be false when the flag is set.
+    const failing = metrics({ liquiditySol: 1 });
+    check("stage 1 does block this token", evaluateStage1Reasons(failing, filters).length > 0);
+
+    // Mirrors the gate in collectTokenMetrics: stage1Reasons.length > 0 && !force
+    const gate = (blocked: boolean, force: boolean) => blocked && !force;
+    check("without the flag, activity is skipped", gate(true, false) === true);
+    check("WITH the flag, activity is collected anyway", gate(true, true) === false);
+    check("a clean token collects activity either way", gate(false, false) === false && gate(false, true) === false);
+  }
+
   console.log(`\nTotal: ${pass} passed, ${fail} failed`);
   if (fail > 0) process.exit(1);
 }

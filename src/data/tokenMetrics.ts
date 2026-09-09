@@ -244,15 +244,31 @@ export async function getWalletActivity(
   if (transactionCount === 0) return { uniqueWallets: 0, transactionCount: 0 };
 
   const wallets = new Set<string>();
-  // Fetch in small batches so one slow RPC call doesn't serialize everything.
+
+  // getParsedTransactions() sends ONE batched JSON-RPC request per chunk rather
+  // than one HTTP request per signature. Previously this issued 100 separate
+  // requests (10 rounds of 10), which is what made a single observation cost
+  // ~101 round trips and pushed the probe into 429s. Same signatures, same fee
+  // payers, same numbers - only the transport changes, so uniqueWallets and
+  // transactionCount are unaffected.
+  // 10, not 25: a batched request spends one credit PER SIGNATURE the instant it
+  // lands, so a large batch can blow a per-second credit budget in one shot and
+  // trigger 429s that the client then retries - turning a cheap call into a slow
+  // one. 10 keeps the round-trip saving without the burst.
   const batchSize = 10;
   for (let i = 0; i < signatures.length; i += batchSize) {
     const batch = signatures.slice(i, i + batchSize);
-    const txs = await Promise.all(
-      batch.map((s) =>
-        connection.getParsedTransaction(s.signature, { maxSupportedTransactionVersion: 0 }).catch(() => null)
-      )
-    );
+    let txs: (Awaited<ReturnType<typeof connection.getParsedTransaction>>)[] = [];
+    try {
+      txs = await connection.getParsedTransactions(
+        batch.map((s) => s.signature),
+        { maxSupportedTransactionVersion: 0 }
+      );
+    } catch {
+      // A failed chunk costs us those wallets but must not discard the rest -
+      // the count is then a floor, which the caller can see via transactionCount.
+      txs = [];
+    }
     for (const tx of txs) {
       const feePayer = tx?.transaction.message.accountKeys?.[0]?.pubkey?.toBase58();
       if (feePayer) wallets.add(feePayer);
@@ -279,7 +295,18 @@ export async function collectTokenMetrics(
   connection: Connection,
   event: NewPoolEvent,
   pollingOverrides?: Partial<PollingConfig>,
-  filtersOverride?: FiltersConfig
+  filtersOverride?: FiltersConfig,
+  options?: {
+    /**
+     * Collect the activity metrics even when stage-1 data already guarantees a
+     * SKIP. The live pipeline never sets this - skipping that work is the whole
+     * point of the two-stage split. The delay probe DOES, because
+     * uniqueWallets/transactionCount are precisely what it exists to measure,
+     * and a token that fails stage 1 at t+0 is exactly the case worth watching
+     * as it ages.
+     */
+    forceActivityMetrics?: boolean;
+  }
 ): Promise<TokenMetrics> {
   const config = loadConfig();
   const polling = { ...config.polling, ...pollingOverrides };
@@ -414,7 +441,7 @@ export async function collectTokenMetrics(
     } as TokenMetrics,
     filters
   );
-  const activitySkippedEarly = stage1Reasons.length > 0;
+  const activitySkippedEarly = stage1Reasons.length > 0 && !options?.forceActivityMetrics;
 
   let uniqueWallets: number | null = null;
   let transactionCount: number | null = null;

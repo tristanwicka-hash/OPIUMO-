@@ -36,8 +36,87 @@ export const PUMPFUN_CREATE_ACCOUNT_INDEX = {
   user: 7,
 };
 
+/**
+ * True only when the Pump.fun program ITSELF emitted "Instruction: Create".
+ *
+ * The previous implementation was `logs.some(l => l.includes(marker))`, which
+ * matched the marker anywhere in the transaction regardless of which program
+ * printed it. The Associated Token Account program logs the *same* line when
+ * it creates an ATA - which happens on an ordinary Pump.fun BUY by a
+ * first-time buyer. That misclassified ~24% of detections as launches: the
+ * watcher then read account index 0 of a `buy` instruction, which is the
+ * program-wide `global` PDA, not a mint. One such address showed up 18 times
+ * in 75 minutes with 18 different signatures, always throwing
+ * TokenInvalidAccountOwnerError.
+ *
+ * Solana brackets each program's output, so the emitting program is
+ * recoverable by tracking invocation depth:
+ *
+ *   Program <pumpfun> invoke [1]
+ *   Program log: Instruction: Create      <- pumpfun's, a real launch
+ *   Program <ata> invoke [2]
+ *   Program log: Instruction: Create      <- the ATA program's, a buy
+ *   Program <ata> success
+ *   Program <pumpfun> success
+ *
+ * We keep a stack of invoked programs and only accept the marker when the
+ * innermost (currently executing) program is Pump.fun.
+ */
 export function isPumpFunCreateLog(logs: string[]): boolean {
-  return logs.some((l) => l.includes(PUMPFUN_CREATE_LOG_MARKER));
+  const pumpfun = PUMPFUN_PROGRAM_ID.toBase58();
+  const stack: string[] = [];
+  let sawAnyInvoke = false;
+  let markerUnderOtherProgram: string | null = null;
+
+  for (const raw of logs) {
+    const line = raw.trim();
+
+    const invoke = line.match(/^Program (\S+) invoke \[\d+\]$/);
+    if (invoke) {
+      sawAnyInvoke = true;
+      stack.push(invoke[1]);
+      continue;
+    }
+    // "success" and "failed: ..." both end an invocation.
+    if (/^Program \S+ (success|failed)/.test(line)) {
+      stack.pop();
+      continue;
+    }
+
+    // `includes`, NOT strict equality. Scoping to the emitting program is what
+    // fixes the ATA false positive; requiring the line to equal the marker
+    // exactly was a second, unintended tightening that rejected every real
+    // launch and took detection to zero. If Pump.fun ever renames the
+    // instruction (CreateV2, say) `includes` keeps matching, while the program
+    // scope still excludes another program's Create.
+    if (line.includes(PUMPFUN_CREATE_LOG_MARKER)) {
+      const emitter = stack[stack.length - 1];
+      if (emitter === pumpfun) return true;
+      markerUnderOtherProgram = emitter ?? "(no invoke context)";
+    }
+  }
+
+  // Never fail silently to zero detections again. If the logs carried no
+  // invoke brackets at all we cannot attribute the marker to anyone - that is a
+  // log-format surprise, not a buy, so fall back to the old permissive match
+  // and say so loudly rather than going quietly blind.
+  if (markerUnderOtherProgram !== null && !sawAnyInvoke) {
+    logger.warn(
+      "Pump.fun create marker seen but the logs contained no 'Program ... invoke [n]' lines, so the " +
+        "emitting program could not be determined. Falling back to a permissive match - if this " +
+        "repeats, the RPC provider's log format has changed and isPumpFunCreateLog needs revisiting."
+    );
+    return true;
+  }
+
+  if (markerUnderOtherProgram !== null) {
+    logger.debug(
+      `ignored an 'Instruction: Create' emitted by ${markerUnderOtherProgram}, not Pump.fun ` +
+        `- this is the ordinary-buy false positive the scoping exists to reject`
+    );
+  }
+
+  return false;
 }
 
 /**

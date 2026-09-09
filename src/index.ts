@@ -8,6 +8,7 @@ import { evaluateFilters } from "./filters/engine";
 import { DecisionLog } from "./filters/decisionLog";
 import { SpotTradingEngine } from "./trading/engine";
 import { WorkQueue } from "./util/workQueue";
+import { DelayProbe } from "./data/delayProbe";
 
 const logger = new Logger("main", loadConfig().logging.level);
 
@@ -73,6 +74,17 @@ async function main() {
   // detected token started its full metrics pipeline the instant it arrived,
   // unbounded - the direct cause of the rate-limiting that made a whole 3-hour
   // run unusable. maxConcurrentTokens is now the ceiling.
+  // Measurement only - never touches a PASS/SKIP or a trade. Runs on its own
+  // bounded queue so a burst of observations cannot delay a live decision.
+  const delayProbe = new DelayProbe(connection);
+  if (config.delayProbe.enabled) {
+    logger.info(
+      `Delay probe ON (measurement only): re-checking each detected token at ` +
+        `${config.delayProbe.delaysSeconds.join("s, ")}s on ${Math.round(config.delayProbe.sampleRate * 100)}% of ` +
+        `detected tokens -> ${config.logging.delayProbeFile}. No effect on any buy/sell decision.`
+    );
+  }
+
   // Reconciliation counters: detected === decided + dropped + still-queued.
   let detected = 0;
   let decided = 0;
@@ -126,6 +138,9 @@ async function main() {
   watcher.on("newPool", (event: NewPoolEvent) => {
     detected++;
     queue.push({ event, queuedAt: Date.now() });
+    // Scheduled alongside, not inside, the decision path - schedule() returns
+    // immediately and a probe failure can never reach the live pipeline.
+    delayProbe.schedule(event);
   });
 
   // Periodic visibility into whether the queue is keeping up. Silent when idle.
@@ -137,6 +152,16 @@ async function main() {
       );
       // Persisted too, so totals survive a crash rather than living only in stdout.
       decisionLog.recordQueueStats({ detected, decided, dropped, queued: s.queued, running: s.running });
+    }
+    if (config.delayProbe.enabled) {
+      const p = delayProbe.stats();
+      if (p.pendingTimers > 0 || p.running > 0) {
+        logger.info(
+          `delay-probe: ${p.completed}/${p.scheduled} observations done, ${p.pendingTimers} pending, ` +
+            `${p.droppedObservations} dropped, ${p.skippedBySampling} tokens not sampled`
+        );
+        delayProbe.recordStats(detected);
+      }
     }
   }, 30_000);
   queueStatsTimer.unref?.();
@@ -153,6 +178,8 @@ async function main() {
       `Final tally: detected=${detected} decided=${decided} dropped=${dropped} stillQueued=${s.queued}. ` +
         `These are also in the decision log (event="queue-stats") so the run can be reconciled later.`
     );
+    delayProbe.recordStats(detected);
+    delayProbe.stop();
     tradingEngine?.stop();
     await watcher.stop();
     process.exit(0);

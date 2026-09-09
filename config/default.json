@@ -61,6 +61,17 @@
     "maxQueuedTokens": 50
   },
 
+  "delayProbe": {
+    "_comment": "MEASUREMENT ONLY - has zero effect on any PASS/SKIP or trading decision. The bot evaluates a token a few hundred ms after launch, when it structurally cannot yet have minUniqueWallets/minTransactionCount - nobody has had time to trade it. Rather than guess a better evaluation delay, this re-collects metrics for the same token at each age below and writes them to logs/delay-probe.jsonl, so the right delay can be read off real data later. It runs on its OWN bounded queue so measurement can never delay a live decision or reintroduce rate-limiting. sampleRate is the fraction of detected tokens probed: measuring EVERY token needs ~22 RPC calls/second, which exceeds the plan's rate limit and collapses into 429 retries and timeouts. Probing a random subset keeps every observation fully accurate (uniqueWalletCount and transactionCount are never approximated) and simply covers fewer tokens - the right trade when the goal is picking a delay from a representative sample rather than auditing every launch. Raise it if your RPC plan has headroom. Set enabled=false to switch it off.",
+    "enabled": true,
+    "delaysSeconds": [30, 120, 300],
+    "maxConcurrentProbes": 2,
+    "maxQueuedProbes": 600,
+    "maxPendingTokens": 400,
+    "fetchTimeoutMs": 20000,
+    "sampleRate": 0.3
+  },
+
   "logging": {
     "level": "info",
     "logDir": "logs",
@@ -68,6 +79,7 @@
     "tradesFile": "logs/trades.jsonl",
     "paperTradesFile": "logs/paper-trades.jsonl",
     "perpsTradesFile": "logs/perps-trades.jsonl",
+    "delayProbeFile": "logs/delay-probe.jsonl",
     "maxLogFileSizeMB": 20
   },
 

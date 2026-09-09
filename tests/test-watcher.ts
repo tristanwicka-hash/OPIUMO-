@@ -61,6 +61,16 @@ function check(name: string, condition: boolean) {
   }
 }
 
+/**
+ * A realistic Pump.fun create log array. isPumpFunCreateLog() now checks WHICH
+ * program emitted "Instruction: Create" (see the Bug 2 fix), so a bare marker
+ * with no invoke bracket is correctly ignored - real logs always have one.
+ */
+function pumpfunCreateLogs(): string[] {
+  const pump = PUMPFUN_PROGRAM_ID.toBase58();
+  return [`Program ${pump} invoke [1]`, PUMPFUN_CREATE_LOG_MARKER, `Program ${pump} success`];
+}
+
 function fixtureAccounts(count: number): PublicKey[] {
   return Array.from({ length: count }, () => Keypair.generate().publicKey);
 }
@@ -103,6 +113,93 @@ async function main() {
     "isPumpFunCreateLog rejects unrelated logs (e.g. a Buy)",
     !isPumpFunCreateLog(["Program log: Instruction: Buy"])
   );
+
+  // Bug 2: an ordinary BUY by a first-time buyer creates their associated token
+  // account, and the ATA program logs the SAME "Instruction: Create" line. The
+  // old substring match treated that as a launch - ~24% of detections - and then
+  // read account index 0 of a `buy`, which is the program-wide `global` PDA.
+  {
+    const PUMP = PUMPFUN_PROGRAM_ID.toBase58();
+    const ATA = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+
+    const buyWithAtaCreate = [
+      `Program ${PUMP} invoke [1]`,
+      "Program log: Instruction: Buy",
+      `Program ${ATA} invoke [2]`,
+      "Program log: Instruction: Create",
+      `Program ${ATA} success`,
+      `Program ${PUMP} success`,
+    ];
+    check(
+      "a BUY whose ATA-create logs 'Instruction: Create' is NOT a launch",
+      !isPumpFunCreateLog(buyWithAtaCreate)
+    );
+
+    const realCreate = [
+      `Program ${PUMP} invoke [1]`,
+      "Program log: Instruction: Create",
+      `Program ${ATA} invoke [2]`,
+      "Program log: Instruction: Create",
+      `Program ${ATA} success`,
+      `Program ${PUMP} success`,
+    ];
+    check(
+      "a real launch IS still detected, even alongside an ATA create",
+      isPumpFunCreateLog(realCreate)
+    );
+
+    // The ATA program's idempotent variant contains the marker as a substring.
+    check(
+      "CreateIdempotent from the ATA program is not a launch",
+      !isPumpFunCreateLog([
+        `Program ${ATA} invoke [1]`,
+        "Program log: Instruction: CreateIdempotent",
+        `Program ${ATA} success`,
+      ])
+    );
+
+    // A failed inner invocation still closes its frame.
+    check(
+      "a failed inner program does not leak its frame",
+      !isPumpFunCreateLog([
+        `Program ${PUMP} invoke [1]`,
+        "Program log: Instruction: Buy",
+        `Program ${ATA} invoke [2]`,
+        `Program ${ATA} failed: custom program error: 0x0`,
+        `Program ${PUMP} success`,
+        `Program ${ATA} invoke [1]`,
+        "Program log: Instruction: Create",
+        `Program ${ATA} success`,
+      ])
+    );
+
+    // Regression guard: scoping must not also make the match exact. Requiring
+    // line === marker took live detection to ZERO, because a real launch's log
+    // text is not guaranteed to equal the marker byte-for-byte.
+    check(
+      "a renamed pumpfun create instruction still matches (includes, not equals)",
+      isPumpFunCreateLog([
+        `Program ${PUMP} invoke [1]`,
+        "Program log: Instruction: CreateV2",
+        `Program ${PUMP} success`,
+      ])
+    );
+    check(
+      "trailing text after the marker still matches",
+      isPumpFunCreateLog([
+        `Program ${PUMP} invoke [1]`,
+        "Program log: Instruction: Create  ",
+        `Program ${PUMP} success`,
+      ])
+    );
+
+    // Fail loudly, never silently to zero: with no invoke brackets we cannot
+    // attribute the marker, so we accept rather than go blind.
+    check(
+      "a bare marker with NO invoke context falls back to permissive (never silent zero)",
+      isPumpFunCreateLog(["Program log: Instruction: Create"])
+    );
+  }
   check(
     "isRaydiumInitialize2Log matches a real-shaped initialize2 log",
     isRaydiumInitialize2Log([
@@ -188,7 +285,7 @@ async function main() {
     let emitCount = 0;
     watcher.on("newPool", () => emitCount++);
 
-    const logsResult = { err: null, logs: [PUMPFUN_CREATE_LOG_MARKER], signature: "duplicate-sig" };
+    const logsResult = { err: null, logs: pumpfunCreateLogs(), signature: "duplicate-sig" };
     await (watcher as any).handlePumpFunLogs(logsResult);
     await (watcher as any).handlePumpFunLogs(logsResult); // same signature delivered again
 

@@ -27,6 +27,7 @@ const suites = [
   { name: "Paper trading mode (Part 10, offline)", script: "tests/test-paper-trading.ts" },
   { name: "Paper-trading performance analyzer (offline)", script: "tests/test-paper-performance.ts" },
   { name: "Two-stage metrics + work queue (offline)", script: "tests/test-two-stage-metrics.ts" },
+  { name: "Delay-probe scheduling (offline)", script: "tests/test-delay-probe.ts" },
 ];
 
 let anyFailed = false;
