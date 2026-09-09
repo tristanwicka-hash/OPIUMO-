@@ -161,6 +161,94 @@ function main() {
     check("the good record's bucket is unaffected", r.buckets[0].scheduled === 1);
   }
 
+  // ---------------------------------------------------------------
+  console.log("\n-- queueWaitMs is measured across every job, not just OK ones --");
+  {
+    const records: DelayProbeRecord[] = [
+      ok(30, { queueWaitMs: 1000 }),
+      { mint: "d1", delaySeconds: 30, actualElapsedMs: -1, queueWaitMs: 5000, ok: false, error: "dropped - probe queue full, observation never taken", uniqueWalletCount: null, transactionCount: null, topHolderPercent: null, liquiditySol: null },
+    ];
+    const r = analyzeDelayProbe(records);
+    check("queueWaitMs sample includes the dropped job", r.buckets[0].queueWaitMs.sampleSize === 2);
+    check("queueWaitMs median reflects both", r.buckets[0].queueWaitMs.median === 3000);
+  }
+
+  // ---------------------------------------------------------------
+  console.log("\n-- collectionMs is OK-only (a dropped/errored job never collected anything) --");
+  {
+    const records: DelayProbeRecord[] = [
+      ok(30, { collectionMs: 500 }),
+      { mint: "e1", delaySeconds: 30, actualElapsedMs: 30500, queueWaitMs: 10, ok: false, error: "RPC timeout after 20000ms", uniqueWalletCount: null, transactionCount: null, topHolderPercent: null, liquiditySol: null, collectionMs: null },
+    ];
+    const r = analyzeDelayProbe(records);
+    check("collectionMs only counts the OK job", r.buckets[0].collectionMs.sampleSize === 1);
+  }
+
+  // ---------------------------------------------------------------
+  console.log("\n-- failure reasons: addresses and millisecond counts are normalized together --");
+  {
+    const records: DelayProbeRecord[] = [
+      ok(30, {
+        mint: "a1",
+        uniqueWalletCount: null,
+        warnings: ["liquiditySol: failed to get balance of account 4v9ovguPke3vwvpVFvUanQY6xxsuJyLZfPqhY4kfYy1Y: Error: "],
+      }),
+      ok(30, {
+        mint: "a2",
+        uniqueWalletCount: null,
+        warnings: ["liquiditySol: failed to get balance of account AXfimWTz3iZaJNBqf8xKvxvKvHqFn3XG6xWCfZFH4Zpe: Error: "],
+      }),
+      ok(30, { mint: "a3", uniqueWalletCount: null, warnings: ["walletActivity: wallet activity timed out after 20000ms"] }),
+      ok(30, { mint: "a4", uniqueWalletCount: null, warnings: ["walletActivity: wallet activity timed out after 18342ms"] }),
+    ];
+    const r = analyzeDelayProbe(records);
+    const reasons = r.buckets[0].topFailureReasons;
+    const balanceReason = reasons.find((x) => x.reason.includes("failed to get balance"));
+    const timeoutReason = reasons.find((x) => x.reason.includes("timed out"));
+    check("two different addresses collapsed into one reason", balanceReason !== undefined && balanceReason.count === 2);
+    check("the account address itself is not in the normalized reason", balanceReason !== undefined && !balanceReason.reason.includes("4v9ovgu"));
+    check("two different timeout durations collapsed into one reason", timeoutReason !== undefined && timeoutReason.count === 2);
+    check("the exact ms value is not in the normalized reason", timeoutReason !== undefined && !timeoutReason.reason.includes("20000ms") && !timeoutReason.reason.includes("18342ms"));
+  }
+
+  // ---------------------------------------------------------------
+  console.log("\n-- failure reasons also come from errored/dropped jobs' `error`, not only OK jobs' `warnings` --");
+  {
+    const records: DelayProbeRecord[] = [
+      { mint: "b1", delaySeconds: 30, actualElapsedMs: 30500, ok: false, error: "RPC timeout after 20000ms", uniqueWalletCount: null, transactionCount: null, topHolderPercent: null, liquiditySol: null },
+      { mint: "b2", delaySeconds: 30, actualElapsedMs: -1, ok: false, error: "dropped - probe queue full, observation never taken", uniqueWalletCount: null, transactionCount: null, topHolderPercent: null, liquiditySol: null },
+    ];
+    const r = analyzeDelayProbe(records);
+    check("errored job's error string is counted", r.buckets[0].topFailureReasons.some((x) => x.reason.includes("RPC timeout")));
+    check("dropped job's error string is counted too", r.buckets[0].topFailureReasons.some((x) => x.reason.includes("dropped")));
+  }
+
+  // ---------------------------------------------------------------
+  console.log("\n-- an OK job with every metric present contributes no failure reason, even with unrelated warnings --");
+  {
+    const records: DelayProbeRecord[] = [
+      ok(30, { warnings: ["some cosmetic warning that isn't about a required metric"] }),
+    ];
+    const r = analyzeDelayProbe(records);
+    check("no failure reasons recorded", r.buckets[0].topFailureReasons.length === 0);
+  }
+
+  // ---------------------------------------------------------------
+  console.log("\n-- reliabilityWarning fires only when evaluable-of-scheduled is genuinely low, and only past a minimum sample --");
+  {
+    const mostlyMissing = Array.from({ length: 10 }, (_, i) => ok(30, { mint: `m${i}`, uniqueWalletCount: i < 2 ? 25 : null }));
+    const r1 = analyzeDelayProbe(mostlyMissing);
+    check("fires when only 2/10 are evaluable", r1.buckets[0].reliabilityWarning !== null);
+
+    const mostlyPresent = Array.from({ length: 10 }, (_, i) => ok(30, { mint: `m${i}` }));
+    const r2 = analyzeDelayProbe(mostlyPresent);
+    check("does not fire when 10/10 are evaluable", r2.buckets[0].reliabilityWarning === null);
+
+    const tinyButIncomplete = [ok(30, { mint: "only-one", uniqueWalletCount: null })];
+    const r3 = analyzeDelayProbe(tinyButIncomplete);
+    check("does not fire on a sample too small to mean anything (below the 5-job floor)", r3.buckets[0].reliabilityWarning === null);
+  }
+
   console.log(`\nTotal: ${pass} passed, ${fail} failed`);
   if (fail > 0) process.exit(1);
 }

@@ -60,6 +60,14 @@ export interface MetricStats {
   max: number | null;
 }
 
+export interface FailureReason {
+  /** Addresses and millisecond counts stripped out, so "failed to get balance
+   * of account <44 different addresses>" collapses into one bucket instead of
+   * looking like hundreds of distinct one-off errors. */
+  reason: string;
+  count: number;
+}
+
 export interface DelayBucketReport {
   delaySeconds: number;
   /** Every job scheduled at this delay, including drops and errors. */
@@ -69,6 +77,16 @@ export interface DelayBucketReport {
   errored: number;
   /** ok:false because the probe queue was full - the observation was never attempted. */
   dropped: number;
+  /** How long each job sat queued before a worker slot picked it up, over EVERY
+   * job at this delay regardless of outcome. A backed-up probe queue delays
+   * collection well past the intended age (see reliabilityWarning) - this is
+   * the number that shows it, distinct from collectionMs (the fetch itself). */
+  queueWaitMs: MetricStats;
+  /** How long the metric fetch itself took, OK observations only. A median
+   * sitting near delayProbe.fetchTimeoutMs is a symptom, not a data point -
+   * it means most observations are effectively timing out, not succeeding
+   * fast with a genuinely quiet token. */
+  collectionMs: MetricStats;
   uniqueWallets: MetricStats;
   transactionCount: MetricStats;
   topHolderPercent: MetricStats;
@@ -82,6 +100,17 @@ export interface DelayBucketReport {
     passed: number;
     passRatePercent: number | null;
   };
+  /** Top normalized failure/warning reasons behind missing wallet/transaction
+   * data at this delay - the errors on non-OK jobs, plus the warnings on OK
+   * jobs that still came back with a null uniqueWalletCount or
+   * transactionCount. Empty when every fully-OK observation actually got both
+   * numbers. */
+  topFailureReasons: FailureReason[];
+  /** Set when the evaluable fraction is too low to trust passRatePercent - a
+   * low pass rate caused mostly by missing data reads as "the strategy loses"
+   * when it may just mean "the RPC couldn't be asked in time," and those need
+   * different fixes (see topFailureReasons for which one this looks like). */
+  reliabilityWarning: string | null;
 }
 
 export interface DelayProbeReport {
@@ -112,8 +141,8 @@ function percentile(sorted: number[], p: number): number | null {
   return sorted[Math.max(0, idx)];
 }
 
-function statsFor(values: Array<number | null>): MetricStats {
-  const present = values.filter((v): v is number => v !== null && !Number.isNaN(v));
+function statsFor(values: Array<number | null | undefined>): MetricStats {
+  const present = values.filter((v): v is number => v !== null && v !== undefined && !Number.isNaN(v));
   const sorted = [...present].sort((a, b) => a - b);
   return {
     sampleSize: present.length,
@@ -123,6 +152,44 @@ function statsFor(values: Array<number | null>): MetricStats {
     p90: percentile(sorted, 90),
     max: sorted.length > 0 ? sorted[sorted.length - 1] : null,
   };
+}
+
+/** Collapses a raw warning/error string into a stable category: account
+ * addresses and millisecond counts vary per observation and would otherwise
+ * make every occurrence look like a distinct one-off failure instead of the
+ * same repeated cause. Order matters - addresses first, since a stripped
+ * address can itself contain digit runs a naive ms-pattern might touch. */
+function normalizeReason(raw: string): string {
+  return raw
+    .replace(/\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/g, "<account>")
+    .replace(/\d+ms/g, "Nms")
+    .trim();
+}
+
+/** Tallies normalized reasons across errored/dropped jobs (their `error`) and
+ * OK jobs still missing a filtered metric (their `warnings`) - the two
+ * places a "why don't we have this number" explanation can live. Sorted by
+ * frequency, capped so one noisy bucket can't dominate the report. */
+function topFailureReasonsFor(group: DelayProbeRecord[], maxReasons = 6): FailureReason[] {
+  const counts = new Map<string, number>();
+  const bump = (raw: string) => {
+    const key = normalizeReason(raw);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  };
+  for (const r of group) {
+    if (!r.ok) {
+      if (r.error) bump(r.error);
+      continue;
+    }
+    const missingRequiredMetric = r.uniqueWalletCount === null || r.transactionCount === null;
+    if (missingRequiredMetric) {
+      for (const w of r.warnings ?? []) bump(w);
+    }
+  }
+  return [...counts.entries()]
+    .map(([reason, count]) => ({ reason, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, maxReasons);
 }
 
 /**
@@ -170,12 +237,31 @@ export function analyzeDelayProbe(
           r.topHolderPercent! <= thresholds.maxTopHolderPercent,
       ).length;
 
+      const queueWaitMs = statsFor(group.map((r) => r.queueWaitMs));
+      const collectionMs = statsFor(ok.map((r) => r.collectionMs));
+      const topFailureReasons = topFailureReasonsFor(group);
+
+      // Evaluable-of-scheduled, not evaluable-of-ok: a job that never even ran
+      // (dropped) is exactly as unable to inform the pass rate as one that ran
+      // and came back incomplete, and both should pull this ratio down.
+      const evaluableRate = group.length > 0 ? evaluableRecords.length / group.length : 0;
+      let reliabilityWarning: string | null = null;
+      if (group.length >= 5 && evaluableRate < 0.5) {
+        reliabilityWarning =
+          `Only ${evaluableRecords.length}/${group.length} jobs at this delay produced a usable reading ` +
+          `(${(evaluableRate * 100).toFixed(0)}%) - the pass rate below is built from a small, possibly ` +
+          "unrepresentative slice, not most of what was scheduled. Check topFailureReasons before reading " +
+          "a low pass rate as a finding about the strategy rather than about data collection.";
+      }
+
       return {
         delaySeconds,
         scheduled: group.length,
         ok: ok.length,
         errored,
         dropped,
+        queueWaitMs,
+        collectionMs,
         uniqueWallets,
         transactionCount,
         topHolderPercent,
@@ -185,6 +271,8 @@ export function analyzeDelayProbe(
           passed,
           passRatePercent: evaluableRecords.length > 0 ? (passed / evaluableRecords.length) * 100 : null,
         },
+        topFailureReasons,
+        reliabilityWarning,
       };
     });
 

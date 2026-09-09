@@ -89,6 +89,12 @@ function bucketSection(b: DelayBucketReport): string[] {
   L.push("");
   L.push(`Scheduled ${b.scheduled} -> ${b.ok} completed, ${b.errored} errored, ${b.dropped} dropped (queue full).`);
   L.push("");
+
+  if (b.reliabilityWarning) {
+    L.push(`> ⚠️ **${b.reliabilityWarning}**`);
+    L.push("");
+  }
+
   L.push(
     `**Would-pass rate at current thresholds: ${n(b.passRate.passRatePercent, 1, "%")}** ` +
       `(${b.passRate.passed}/${b.passRate.evaluable} evaluable observations - the rest were missing at least one of the three filtered metrics).`,
@@ -100,7 +106,17 @@ function bucketSection(b: DelayBucketReport): string[] {
   L.push(metricRow("Transaction count", b.transactionCount));
   L.push(metricRow("Top holder %", b.topHolderPercent, "%"));
   L.push(metricRow("Liquidity (SOL)", b.liquiditySol));
+  L.push(metricRow("Queue wait (ms)", b.queueWaitMs, ""));
+  L.push(metricRow("Collection time (ms)", b.collectionMs, ""));
   L.push("");
+
+  if (b.topFailureReasons.length > 0) {
+    L.push("**Why data was missing, most common first:**");
+    L.push("");
+    for (const f of b.topFailureReasons) L.push(`- ${f.count}x — ${f.reason}`);
+    L.push("");
+  }
+
   return L;
 }
 
@@ -150,9 +166,14 @@ function buildMarkdown(r: DelayProbeReport, args: Args, missing: boolean, badLin
   L.push("| Delay | Would-pass rate | Evaluable / OK / scheduled |");
   L.push("|---|---|---|");
   for (const b of r.buckets) {
+    const flag = b.reliabilityWarning ? " ⚠️" : "";
     L.push(
-      `| ${b.delaySeconds}s | ${n(b.passRate.passRatePercent, 1, "%")} | ${b.passRate.evaluable} / ${b.ok} / ${b.scheduled} |`,
+      `| ${b.delaySeconds}s${flag} | ${n(b.passRate.passRatePercent, 1, "%")} | ${b.passRate.evaluable} / ${b.ok} / ${b.scheduled} |`,
     );
+  }
+  if (r.buckets.some((b) => b.reliabilityWarning)) {
+    L.push("");
+    L.push("⚠️ = fewer than half of scheduled jobs produced a usable reading at that delay. See the detail section below before trusting that row's pass rate.");
   }
   L.push("");
 
