@@ -398,7 +398,19 @@ export async function collectTokenMetrics(
   await Promise.all([
     (async () => {
       try {
-        const exclude = new Set<string>([event.poolAddress, event.raydiumCoinVault, event.raydiumPcVault].filter(Boolean) as string[]);
+        // The bonding-curve PDA (poolAddress) is NOT a token account, so it can
+        // never appear in getTokenLargestAccounts and excluding it does nothing.
+        // The account that actually holds Pump.fun's un-bought supply is the
+        // bonding curve's associated token account - without it, the pool itself
+        // is counted as the top holder and every pre-migration token reads ~99%.
+        const exclude = new Set<string>(
+          [
+            event.poolAddress,
+            event.pumpfunAssociatedBondingCurve,
+            event.raydiumCoinVault,
+            event.raydiumPcVault,
+          ].filter(Boolean) as string[]
+        );
         topHolderPercent = await timeout(getTopHolderPercent(connection, mint, supplyRaw, exclude), "top holder %");
       } catch (err: any) {
         warnings.push(`topHolderPercent: ${err?.message || err}`);

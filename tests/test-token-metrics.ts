@@ -76,6 +76,43 @@ function mockConnection(overrides: Partial<Record<string, (...args: any[]) => an
   return { ...base, ...overrides } as unknown as Connection;
 }
 
+
+/**
+ * Regression: the pool's own token account must be excluded from top-holder
+ * concentration. getTokenLargestAccounts returns TOKEN ACCOUNTS; the
+ * bonding-curve PDA is not one, so excluding it achieved nothing and the pool
+ * read as a ~99% holder on every pre-migration Pump.fun token.
+ */
+async function topHolderExclusionChecks() {
+  console.log("\n-- top holder: the pool's own token account is excluded --");
+  const POOL_ATA = "PoolAta1111111111111111111111111111111111111";
+  const REAL_HOLDER = "Holder11111111111111111111111111111111111111";
+
+  const conn = mockConnection({
+    getTokenLargestAccounts: async () => ({
+      value: [
+        { address: { toBase58: () => POOL_ATA }, amount: "980000000" },
+        { address: { toBase58: () => REAL_HOLDER }, amount: "10000000" },
+      ],
+    }),
+  });
+
+  const supply = 1_000_000_000n;
+
+  // Without the exclusion the pool reads as a 98% holder.
+  const notExcluded = await getTopHolderPercent(conn, Keypair.generate().publicKey, supply, new Set());
+  check("without exclusion the pool looks like a 98% holder", notExcluded === 98);
+
+  // With it, the real largest non-pool holder is 1%.
+  const excluded = await getTopHolderPercent(conn, Keypair.generate().publicKey, supply, new Set([POOL_ATA]));
+  check("excluding the pool ATA gives the real top holder (1%)", excluded === 1);
+
+  check(
+    "the difference decides PASS vs SKIP at maxTopHolderPercent=20",
+    (notExcluded as number) > 20 && (excluded as number) < 20
+  );
+}
+
 async function main() {
   console.log("=== Part 3 test: token metrics ===");
 
@@ -263,6 +300,8 @@ async function main() {
     check("transactionCount matches signature count", activity.transactionCount === 8);
     check("uniqueWallets deduplicates fee payers", activity.uniqueWallets === 5);
   }
+
+  await topHolderExclusionChecks();
 
   console.log(`\nOffline checks: ${pass} passed, ${fail} failed`);
 

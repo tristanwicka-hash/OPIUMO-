@@ -237,6 +237,18 @@ async function main() {
       "  ...and NOT from the old index-7 slot",
       event?.creator !== accounts[PUMPFUN_CREATE_ACCOUNT_INDEX.user].toBase58()
     );
+    // The bonding curve's ASSOCIATED TOKEN ACCOUNT (index 3). Without this the
+    // pool itself counts as the top holder and every pre-migration Pump.fun
+    // token reads ~99% concentration - 207 of 335 real readings did.
+    check(
+      "captures the associated bonding curve at index 3",
+      event?.pumpfunAssociatedBondingCurve ===
+        accounts[PUMPFUN_CREATE_ACCOUNT_INDEX.associatedBondingCurve].toBase58()
+    );
+    check(
+      "  ...which is a DIFFERENT account from poolAddress",
+      event?.pumpfunAssociatedBondingCurve !== event?.poolAddress
+    );
   }
 
   // The exact bug this replaced: a program ID must never be reported as a wallet.

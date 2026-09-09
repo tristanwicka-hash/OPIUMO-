@@ -145,6 +145,10 @@ export function extractPumpFunNewPool(
     if (!mintPk) continue;
 
     const bondingCurvePk = accounts[PUMPFUN_CREATE_ACCOUNT_INDEX.bondingCurve];
+    // Index 3. Safe to read even though index 7 was not: indices 0-4 sit BEFORE
+    // the two Metaplex metadata accounts, so they do not shift on the
+    // Token-2022 variant that broke the old creator lookup.
+    const assocBondingCurvePk = accounts[PUMPFUN_CREATE_ACCOUNT_INDEX.associatedBondingCurve];
 
     // The creator is the transaction's FEE PAYER, not a fixed account index.
     //
@@ -178,6 +182,7 @@ export function extractPumpFunNewPool(
       // The bonding curve PDA holds the pool's native SOL balance directly -
       // that IS the liquidity for a pre-migration Pump.fun token.
       poolAddress: bondingCurvePk?.toBase58(),
+      pumpfunAssociatedBondingCurve: assocBondingCurvePk?.toBase58(),
       creator,
       detectedAt: new Date().toISOString(),
     };

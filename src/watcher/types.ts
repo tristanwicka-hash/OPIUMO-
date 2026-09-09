@@ -11,6 +11,16 @@ export interface NewPoolEvent {
   poolAddress?: string;
   /** Wallet that created the token/pool, when we can identify it from the tx. */
   creator?: string;
+  /**
+   * Pump.fun only: the bonding curve's ASSOCIATED TOKEN ACCOUNT - the account
+   * that actually holds the un-bought supply.
+   *
+   * Distinct from `poolAddress`, which is the bonding-curve PDA. That PDA holds
+   * the pool's SOL but is not a token account, so it never appears in
+   * getTokenLargestAccounts() and excluding it achieves nothing. This is the
+   * address that must be excluded from top-holder concentration.
+   */
+  pumpfunAssociatedBondingCurve?: string;
   /** Raydium-only: the pool's SPL token vault for the base ("coin") mint. */
   raydiumCoinVault?: string;
   /** Raydium-only: the pool's SPL token vault for the quote ("pc") mint. */
