@@ -28,6 +28,7 @@ const suites = [
   { name: "Paper-trading performance analyzer (offline)", script: "tests/test-paper-performance.ts" },
   { name: "Two-stage metrics + work queue (offline)", script: "tests/test-two-stage-metrics.ts" },
   { name: "Delay-probe scheduling (offline)", script: "tests/test-delay-probe.ts" },
+  { name: "Delay-probe report analysis (offline)", script: "tests/test-delay-probe-report.ts" },
   { name: "Swap priority fee (offline)", script: "tests/test-priority-fee.ts" },
 ];
 

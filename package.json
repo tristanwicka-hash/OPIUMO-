@@ -13,6 +13,7 @@
     "start:perps": "node dist/src/perpsIndex.js",
     "verify:raydium-tx": "ts-node scripts/verify-raydium-tx.ts",
     "report:paper": "ts-node scripts/analyze-paper-performance.ts",
+    "report:delay-probe": "ts-node scripts/analyze-delay-probe.ts",
     "test": "ts-node tests/run-all.ts",
     "test:rpc": "ts-node tests/test-rpc-connection.ts",
     "test:watcher": "ts-node tests/test-watcher.ts",
@@ -33,6 +34,7 @@
     "test:paper-performance": "ts-node tests/test-paper-performance.ts",
     "test:two-stage": "ts-node tests/test-two-stage-metrics.ts",
     "test:delay-probe": "ts-node tests/test-delay-probe.ts",
+    "test:delay-probe-report": "ts-node tests/test-delay-probe-report.ts",
     "test:priority-fee": "ts-node tests/test-priority-fee.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
