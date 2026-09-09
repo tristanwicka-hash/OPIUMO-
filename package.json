@@ -14,6 +14,7 @@
     "verify:raydium-tx": "ts-node scripts/verify-raydium-tx.ts",
     "report:paper": "ts-node scripts/analyze-paper-performance.ts",
     "report:delay-probe": "ts-node scripts/analyze-delay-probe.ts",
+    "report:outcomes": "ts-node scripts/analyze-outcomes.ts",
     "test": "ts-node tests/run-all.ts",
     "test:rpc": "ts-node tests/test-rpc-connection.ts",
     "test:watcher": "ts-node tests/test-watcher.ts",
@@ -35,6 +36,7 @@
     "test:two-stage": "ts-node tests/test-two-stage-metrics.ts",
     "test:delay-probe": "ts-node tests/test-delay-probe.ts",
     "test:delay-probe-report": "ts-node tests/test-delay-probe-report.ts",
+    "test:outcomes": "ts-node tests/test-outcome-analysis.ts",
     "test:priority-fee": "ts-node tests/test-priority-fee.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

@@ -30,6 +30,7 @@ const suites = [
   { name: "Delay-probe scheduling (offline)", script: "tests/test-delay-probe.ts" },
   { name: "Delay-probe report analysis (offline)", script: "tests/test-delay-probe-report.ts" },
   { name: "Swap priority fee (offline)", script: "tests/test-priority-fee.ts" },
+  { name: "Outcome analysis (offline)", script: "tests/test-outcome-analysis.ts" },
 ];
 
 let anyFailed = false;

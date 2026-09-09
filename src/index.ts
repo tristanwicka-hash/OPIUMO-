@@ -9,6 +9,7 @@ import { DecisionLog } from "./filters/decisionLog";
 import { SpotTradingEngine } from "./trading/engine";
 import { WorkQueue } from "./util/workQueue";
 import { DelayProbe } from "./data/delayProbe";
+import { OutcomeTracker } from "./data/outcomeTracker";
 
 const logger = new Logger("main", loadConfig().logging.level);
 
@@ -85,6 +86,19 @@ async function main() {
     );
   }
 
+  // Also measurement only. Records what each token BECAME, which is the only
+  // thing that can say whether a SKIP was correct - a 0% pass rate is a good
+  // filter if none of the rejects ran, and a broken one if some did.
+  const outcomeTracker = new OutcomeTracker(connection);
+  if (config.outcomeTracker.enabled) {
+    outcomeTracker.restorePending();
+    logger.info(
+      `Outcome tracker ON (measurement only): re-reading liquidity at ` +
+        `${config.outcomeTracker.checkpointsSeconds.map((s) => `${Math.round(s / 60)}min`).join(", ")} after detection ` +
+        `-> ${config.logging.outcomeFile}. Pending checkpoints survive a restart. No effect on any buy/sell decision.`
+    );
+  }
+
   // Reconciliation counters: detected === decided + dropped + still-queued.
   let detected = 0;
   let decided = 0;
@@ -129,6 +143,12 @@ async function main() {
       });
       decided++;
 
+      // Baseline is the liquidity the DECISION was made on, so a later multiple
+      // means "grew this much since we looked", not "since some other moment".
+      // Scheduled after the decision is recorded so it can never sit in front
+      // of the live path.
+      outcomeTracker.schedule(event, metrics.liquiditySol ?? null);
+
       if (result.decision === "PASS" && tradingEngine) {
         await tradingEngine.onFilterPass(event, result);
       }
@@ -163,6 +183,15 @@ async function main() {
         delayProbe.recordStats(detected);
       }
     }
+    if (config.outcomeTracker.enabled) {
+      const o = outcomeTracker.stats();
+      if (o.pendingCheckpoints > 0 || o.running > 0) {
+        logger.info(
+          `outcomes: ${o.completed}/${o.scheduled} readings done, ${o.pendingCheckpoints} pending, ` +
+            `${o.missed} missed, ${o.replayedAfterRestart} replayed after restart`
+        );
+      }
+    }
   }, 30_000);
   queueStatsTimer.unref?.();
 
@@ -180,6 +209,8 @@ async function main() {
     );
     delayProbe.recordStats(detected);
     delayProbe.stop();
+    // Pending checkpoints stay on disk on purpose - the next run replays them.
+    outcomeTracker.stop();
     tradingEngine?.stop();
     await watcher.stop();
     process.exit(0);

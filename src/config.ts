@@ -146,6 +146,34 @@ export interface DelayProbeConfig {
   sampleRate: number;
 }
 
+export interface OutcomeTrackerConfig {
+  enabled: boolean;
+  /**
+   * Ages (seconds after detection) at which to re-read the token's liquidity.
+   * Longer than the delay probe's ladder on purpose: this measures what a token
+   * BECAME, not whether it was measurable yet.
+   */
+  checkpointsSeconds: number[];
+  maxConcurrentChecks: number;
+  maxQueuedChecks: number;
+  /** Cap on outstanding checkpoints so a detection burst can't grow memory or the state file without bound. */
+  maxPendingCheckpoints: number;
+  /**
+   * Fraction of detected tokens to track (0-1). Defaults to 1 - unlike the
+   * delay probe, one checkpoint is a single getBalance call, and winners are
+   * rare enough that sampling them would mean observing almost none.
+   */
+  sampleRate: number;
+  /** Where pending checkpoints are persisted so a restart doesn't silently drop a 24h reading. */
+  pendingStateFile: string;
+  /**
+   * How overdue a restored checkpoint may be and still be taken. Beyond this it
+   * is recorded as missed, because filing a badly-late reading as an on-time
+   * one corrupts the distribution this exists to measure.
+   */
+  lateToleranceMs: number;
+}
+
 export interface LoggingConfig {
   level: "minimal" | "info" | "debug";
   logDir: string;
@@ -155,6 +183,7 @@ export interface LoggingConfig {
   paperTradesFile: string;
   perpsTradesFile: string;
   delayProbeFile: string;
+  outcomeFile: string;
   maxLogFileSizeMB: number;
 }
 
@@ -200,6 +229,7 @@ export interface AppConfig {
   sources: SourcesConfig;
   polling: PollingConfig;
   delayProbe: DelayProbeConfig;
+  outcomeTracker: OutcomeTrackerConfig;
   logging: LoggingConfig;
   perps: PerpsConfig;
   fundingArb: FundingArbConfig;
@@ -263,6 +293,21 @@ function validate(config: AppConfig): void {
     if (config.delayProbe.fetchTimeoutMs <= 0) errors.push("delayProbe.fetchTimeoutMs must be > 0");
     if (config.delayProbe.sampleRate <= 0 || config.delayProbe.sampleRate > 1) {
       errors.push("delayProbe.sampleRate must be > 0 and <= 1 (fraction of detected tokens to probe)");
+    }
+  }
+  if (config.outcomeTracker?.enabled) {
+    if (!Array.isArray(config.outcomeTracker.checkpointsSeconds) || config.outcomeTracker.checkpointsSeconds.length === 0) {
+      errors.push("outcomeTracker.checkpointsSeconds must be a non-empty array of seconds (e.g. [3600, 21600, 86400])");
+    } else if (config.outcomeTracker.checkpointsSeconds.some((d) => typeof d !== "number" || d <= 0)) {
+      errors.push("outcomeTracker.checkpointsSeconds must contain only positive numbers");
+    }
+    if (config.outcomeTracker.maxConcurrentChecks <= 0) errors.push("outcomeTracker.maxConcurrentChecks must be > 0");
+    if (config.outcomeTracker.maxQueuedChecks <= 0) errors.push("outcomeTracker.maxQueuedChecks must be > 0");
+    if (config.outcomeTracker.maxPendingCheckpoints <= 0) errors.push("outcomeTracker.maxPendingCheckpoints must be > 0");
+    if (config.outcomeTracker.lateToleranceMs <= 0) errors.push("outcomeTracker.lateToleranceMs must be > 0");
+    if (!config.outcomeTracker.pendingStateFile) errors.push("outcomeTracker.pendingStateFile must be set");
+    if (config.outcomeTracker.sampleRate <= 0 || config.outcomeTracker.sampleRate > 1) {
+      errors.push("outcomeTracker.sampleRate must be > 0 and <= 1");
     }
   }
   if (config.trading.trailingStopActivateMultiple <= 1) errors.push("trading.trailingStopActivateMultiple must be > 1 (it's a multiple of entry price)");

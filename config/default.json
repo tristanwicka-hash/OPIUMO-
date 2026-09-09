@@ -1,13 +1,11 @@
 {
   "_comment": "All tunables live here so you never have to touch source code. Edit, save, restart the bot.",
-
   "jupiter": {
     "_comment": "Jupiter's public Swap API for actually executing buys/sells. These URLs could NOT be verified live from this sandbox (no network egress here) - Jupiter has moved/renamed this endpoint before (quote-api.jup.ag -> lite-api.jup.ag among others). If swaps start failing with connection errors, check https://dev.jup.ag for the current endpoint and update here - one place, no code changes needed.",
     "quoteApiUrl": "https://quote-api.jup.ag/v6/quote",
     "swapApiUrl": "https://quote-api.jup.ag/v6/swap",
     "requestTimeoutMs": 10000
   },
-
   "trading": {
     "_comment": "Master switch. MUST be flipped to true by hand once you have verified the filter logic yourself. See NON-NEGOTIABLES in README.md. Position sizing is risk-based (from stop-loss distance), not a flat SOL amount - set totalCapitalSol to your real trading bankroll. riskPercentPerTrade is your dial (0.5-1% per the strategy spec); there is ALSO a non-overridable hard cap (1% of capital) enforced in src/trading/sizing.ts that no config value can loosen - in practice that hard cap is what actually sizes most trades, see the comment there. paperTrading is a SECOND, independent safety net: even after enabled=true, real money is only ever at risk once paperTrading is ALSO set to false - until then every buy/sell is a simulated fill against real Jupiter prices, logged to logging.paperTradesFile instead of tradesFile. No wallet is required while paperTrading is true.",
     "enabled": false,
@@ -20,9 +18,18 @@
     "sellPriorityFeeLamports": 100000,
     "buyPriorityFeeLamports": 0,
     "takeProfitLadder": [
-      { "atMultipleOfEntry": 2, "sellPercentOfRemaining": 50 },
-      { "atMultipleOfEntry": 5, "sellPercentOfRemaining": 25 },
-      { "atMultipleOfEntry": 10, "sellPercentOfRemaining": 25 }
+      {
+        "atMultipleOfEntry": 2,
+        "sellPercentOfRemaining": 50
+      },
+      {
+        "atMultipleOfEntry": 5,
+        "sellPercentOfRemaining": 25
+      },
+      {
+        "atMultipleOfEntry": 10,
+        "sellPercentOfRemaining": 25
+      }
     ],
     "atrPeriod": 14,
     "atrStopMultiplier": 1.75,
@@ -35,7 +42,6 @@
     "sellFailureBackoffBaseMs": 30000,
     "sellFailureBackoffMaxMs": 1800000
   },
-
   "filters": {
     "_comment": "A token must satisfy ALL of these to PASS. Any failed rule => SKIP with a reason.",
     "minLiquiditySol": 5,
@@ -49,12 +55,10 @@
     "rejectRiskyTokenExtensions": true,
     "maxCreatorLpPercent": 1
   },
-
   "sources": {
     "watchPumpFun": true,
     "watchRaydium": true
   },
-
   "polling": {
     "metricsMaxAgeMs": 4000,
     "metricsFetchTimeoutMs": 8000,
@@ -63,18 +67,22 @@
     "maxConcurrentTokens": 2,
     "maxQueuedTokens": 50
   },
-
   "delayProbe": {
     "_comment": "MEASUREMENT ONLY - has zero effect on any PASS/SKIP or trading decision. The bot evaluates a token a few hundred ms after launch, when it structurally cannot yet have minUniqueWallets/minTransactionCount - nobody has had time to trade it. Rather than guess a better evaluation delay, this re-collects metrics for the same token at each age below and writes them to logs/delay-probe.jsonl, so the right delay can be read off real data later. It runs on its OWN bounded queue so measurement can never delay a live decision or reintroduce rate-limiting. sampleRate is the fraction of detected tokens probed: measuring EVERY token needs ~22 RPC calls/second, which exceeds the plan's rate limit and collapses into 429 retries and timeouts. Probing a random subset keeps every observation fully accurate (uniqueWalletCount and transactionCount are never approximated) and simply covers fewer tokens - the right trade when the goal is picking a delay from a representative sample rather than auditing every launch. Raise it if your RPC plan has headroom. LOWERED 0.3 -> 0.08 on 2026-09-09: the first real run showed queueWaitMs medians of 10-31 MINUTES against a nominal 30s delay, because at maxConcurrentProbes:2 each job takes ~20s to time out and the queue simply cannot drain. Only 29% of observations (128/435) produced a usable reading. Fewer, cleaner observations beat many useless ones - a 30s observation actually taken 40 minutes late is not a 30s observation. EXTENDED 2026-09-09: added 1800s (30min) and 7200s (2h). At 30/120/300s the unique-wallet count plateaus at a median of 4 and a max of 10 across ALL three delays - the curve is flat, so no delay in that range gets a token near minUniqueWallets:20. The ladder has to reach further before a delay can be picked from evidence rather than guessed. Set enabled=false to switch it off.",
     "enabled": true,
-    "delaysSeconds": [30, 120, 300, 1800, 7200],
+    "delaysSeconds": [
+      30,
+      120,
+      300,
+      1800,
+      7200
+    ],
     "maxConcurrentProbes": 2,
     "maxQueuedProbes": 600,
     "maxPendingTokens": 400,
     "fetchTimeoutMs": 20000,
     "sampleRate": 0.08
   },
-
   "logging": {
     "level": "info",
     "logDir": "logs",
@@ -83,15 +91,17 @@
     "paperTradesFile": "logs/paper-trades.jsonl",
     "perpsTradesFile": "logs/perps-trades.jsonl",
     "delayProbeFile": "logs/delay-probe.jsonl",
-    "maxLogFileSizeMB": 20
+    "maxLogFileSizeMB": 20,
+    "outcomeFile": "logs/outcomes.jsonl"
   },
-
   "perps": {
     "_comment": "Perpetuals trading via Drift Protocol. PLUMBING ONLY - there is no entry strategy wired up yet (see README). Leverage means you can lose your whole position fast, faster than spot - keep enabled=false and env=devnet until you've read the risk engine's tests and tried it with fake devnet funds first.",
     "enabled": false,
     "env": "devnet",
     "subAccountId": 0,
-    "allowedMarkets": ["SOL-PERP"],
+    "allowedMarkets": [
+      "SOL-PERP"
+    ],
     "maxLeverage": 3,
     "maxPositionSizeUsd": 100,
     "maxOpenPositions": 1,
@@ -100,7 +110,6 @@
     "defaultTakeProfitPercent": 20,
     "orderTimeoutMs": 15000
   },
-
   "fundingArb": {
     "_comment": "Funding Rate Arbitrage strategy: long spot (assumed already held, or deposited as Drift spot collateral yourself - this bot does NOT buy the spot leg for you, see README) + short perp, equal notional, farming the funding rate. Reuses perps.* risk gate - maxLeverage below must be <= perps.maxLeverage, and market must be in perps.allowedMarkets. NOTE: Drift settles funding roughly hourly, not the 8hr cadence common on centralized exchanges - thresholds below are expressed per-hour to match Drift's actual cadence (read live from each market, not hardcoded).",
     "enabled": false,
@@ -117,5 +126,20 @@
     "estimatedRoundTripCostBps": 10,
     "minMarginBufferPercent": 20,
     "historyFile": "logs/funding-arb-history.json"
+  },
+  "outcomeTracker": {
+    "_comment": "MEASUREMENT ONLY - never affects a PASS/SKIP or a trade. Records what each detected token BECAME (bonding-curve SOL at each checkpoint), which is the only thing that can say whether the filters are rejecting correctly. A 0% pass rate means the filters work if none of the rejects went anywhere, and means they burn money if some did - outcome data is what separates those. One checkpoint is a single getBalance call (~1/5 the cost of full metric collection), so unlike delayProbe this tracks EVERY token: winners run 1-2% and sampling at 8% would observe almost none. Pending checkpoints persist to disk and replay after a restart, because 24h timers otherwise never survive - this bot restarts far more often than once a day. Set enabled=false to switch off.",
+    "enabled": true,
+    "checkpointsSeconds": [
+      3600,
+      21600,
+      86400
+    ],
+    "maxConcurrentChecks": 3,
+    "maxQueuedChecks": 500,
+    "maxPendingCheckpoints": 5000,
+    "sampleRate": 1,
+    "pendingStateFile": "logs/outcome-pending.json",
+    "lateToleranceMs": 3600000
   }
 }
