@@ -128,7 +128,7 @@
     "historyFile": "logs/funding-arb-history.json"
   },
   "outcomeTracker": {
-    "_comment": "MEASUREMENT ONLY - never affects a PASS/SKIP or a trade. Records what each detected token BECAME (bonding-curve SOL at each checkpoint), which is the only thing that can say whether the filters are rejecting correctly. A 0% pass rate means the filters work if none of the rejects went anywhere, and means they burn money if some did - outcome data is what separates those. One checkpoint is a single getBalance call (~1/5 the cost of full metric collection), so unlike delayProbe this tracks EVERY token: winners run 1-2% and sampling at 8% would observe almost none. Pending checkpoints persist to disk and replay after a restart, because 24h timers otherwise never survive - this bot restarts far more often than once a day. Set enabled=false to switch off.",
+    "_comment": "MEASUREMENT ONLY - never affects a PASS/SKIP or a trade. Records what each detected token BECAME (bonding-curve SOL at each checkpoint), which is the only thing that can say whether the filters are rejecting correctly. A 0% pass rate means the filters work if none of the rejects went anywhere, and means they burn money if some did - outcome data is what separates those. One checkpoint is a single getBalance call (~1/5 the cost of full metric collection), so unlike delayProbe this tracks EVERY token: winners run 1-2% and sampling at 8% would observe almost none. Pending checkpoints persist to disk and replay after a restart, because 24h timers otherwise never survive - this bot restarts far more often than once a day. Set enabled=false to switch off. CAPACITY: steady-state pending is roughly (detections/min) x (longest checkpoint in min) x (number of checkpoints) - at the ~21 detections/min observed live on 2026-09-09 with a 24h horizon that is ~39,000, so the original 5,000 would have filled 80 minutes after every restart and then stopped following new tokens entirely, biasing the sample toward whatever launched just after a restart. Raised to 60,000. persistDebounceMs bounds state-file writes to one per interval instead of one per detection, because the whole map is serialised each time.",
     "enabled": true,
     "checkpointsSeconds": [
       3600,
@@ -137,9 +137,10 @@
     ],
     "maxConcurrentChecks": 3,
     "maxQueuedChecks": 500,
-    "maxPendingCheckpoints": 5000,
+    "maxPendingCheckpoints": 60000,
     "sampleRate": 1,
     "pendingStateFile": "logs/outcome-pending.json",
-    "lateToleranceMs": 3600000
+    "lateToleranceMs": 3600000,
+    "persistDebounceMs": 5000
   }
 }

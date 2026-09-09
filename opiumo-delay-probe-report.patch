@@ -1,0 +1,697 @@
+From 669f3b22db0686b53852812b4b7e587ede093102 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 9 Sep 2026 06:09:44 +0000
+Subject: [PATCH] Add a delay-probe report - the tool that actually picks the
+ evaluation delay
+
+The delay probe (14e0f0b) writes raw observations to logs/delay-probe.jsonl
+but nothing reads them yet. This is that reader: it answers the roadmap's
+top open item directly - at 30s/120s/300s after detection, what fraction of
+tokens would pass minUniqueWallets/minTransactionCount/maxTopHolderPercent
+today, and how do the underlying numbers move with age.
+
+src/analysis/delayProbeAnalysis.ts
+-------------------------------------------------------------------------
+Pure aggregation, no fs/config/network, matching src/analysis/paperPerformance.ts's
+split so it stays testable without loadConfig() dragging RPC_URL validation
+into an offline analysis tool (CLAUDE.md: "src/analysis/ is deliberately
+config-free"). Groups by delaySeconds and computes, per bucket:
+
+* dropped vs errored, told apart and both excluded from stats - a dropped
+  observation (queue full, never attempted) and an errored one (fetch threw)
+  are different failure modes and neither has real numbers to average in.
+* per-metric min/median/p90/max, with null values counted (nullCount) and
+  excluded from sampleSize rather than treated as zero.
+* passRate: of observations where all three filtered metrics are non-null
+  ("evaluable"), the fraction that pass at the given thresholds. Reports
+  null (not 0%) when nothing is evaluable - 0% would misleadingly imply a
+  real failing measurement rather than an absence of one.
+
+scripts/analyze-delay-probe.ts
+-------------------------------------------------------------------------
+CLI wrapper: npm run report:delay-probe. Reads logs/delay-probe.jsonl (three-way
+missing/empty/unparseable handling, same as analyze-paper-performance.ts's
+readJsonl), prints a console summary, writes a markdown report under reports/.
+Thresholds default to config/default.json's shipped values but are overridable
+by flag so a re-tune doesn't silently change what an old report means.
+
+tests/test-delay-probe-report.ts (31 assertions, offline)
+-------------------------------------------------------------------------
+Covers: coverage lines never counted as observations, dropped/errored
+distinction, median/p90 on a known distribution, nulls never averaged as
+zero, pass-rate boundary conditions (exact threshold, missing-field
+exclusion, null-not-zero when nothing is evaluable), multi-bucket sorting,
+distinct-mint counting, and malformed delaySeconds excluded rather than
+grouped under NaN.
+
+Verified: npm run typecheck clean, npm test all offline suites still green
+(482 offline assertions total now, up from 451), new suite run standalone
+with zero env vars set to confirm it is genuinely config-free. Manually
+exercised the CLI end-to-end against a synthetic 123-line fixture (40 mints
+x 3 delays + a drop + an error + a coverage line) - report rendered a
+sensible pass-rate curve (0% at 30s, 20% at 120s, 75% at 300s on the
+synthetic data) and wrote to reports/ correctly. Fixture and its output were
+local-only and not committed (both gitignored).
+
+Does not touch any PASS/SKIP/trading decision - read-only reporting on a
+log file, same as the paper-performance analyzer. Wired into tests/run-all.ts
+and package.json (report:delay-probe, test:delay-probe-report).
+
+Next real step needs your Mac: run the bot in paper mode for a while
+(delayProbe.enabled is already true by default) to generate real
+logs/delay-probe.jsonl data, then `npm run report:delay-probe` on it to
+actually pick the delay from real numbers instead of the synthetic ones
+used to verify this tool.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01YbzucYjtn5QyqGhsTv23Hb
+---
+ package.json                       |   2 +
+ scripts/analyze-delay-probe.ts     | 195 +++++++++++++++++++++++++++
+ src/analysis/delayProbeAnalysis.ts | 203 +++++++++++++++++++++++++++++
+ tests/run-all.ts                   |   1 +
+ tests/test-delay-probe-report.ts   | 168 ++++++++++++++++++++++++
+ 5 files changed, 569 insertions(+)
+ create mode 100644 scripts/analyze-delay-probe.ts
+ create mode 100644 src/analysis/delayProbeAnalysis.ts
+ create mode 100644 tests/test-delay-probe-report.ts
+
+diff --git a/package.json b/package.json
+index f5cde99..8dc73af 100644
+--- a/package.json
++++ b/package.json
+@@ -13,6 +13,7 @@
+     "start:perps": "node dist/src/perpsIndex.js",
+     "verify:raydium-tx": "ts-node scripts/verify-raydium-tx.ts",
+     "report:paper": "ts-node scripts/analyze-paper-performance.ts",
++    "report:delay-probe": "ts-node scripts/analyze-delay-probe.ts",
+     "test": "ts-node tests/run-all.ts",
+     "test:rpc": "ts-node tests/test-rpc-connection.ts",
+     "test:watcher": "ts-node tests/test-watcher.ts",
+@@ -33,6 +34,7 @@
+     "test:paper-performance": "ts-node tests/test-paper-performance.ts",
+     "test:two-stage": "ts-node tests/test-two-stage-metrics.ts",
+     "test:delay-probe": "ts-node tests/test-delay-probe.ts",
++    "test:delay-probe-report": "ts-node tests/test-delay-probe-report.ts",
+     "test:priority-fee": "ts-node tests/test-priority-fee.ts",
+     "typecheck": "tsc -p tsconfig.json --noEmit"
+   },
+diff --git a/scripts/analyze-delay-probe.ts b/scripts/analyze-delay-probe.ts
+new file mode 100644
+index 0000000..12c679b
+--- /dev/null
++++ b/scripts/analyze-delay-probe.ts
+@@ -0,0 +1,195 @@
++/**
++ * Delay-probe report - answers the top open question in the roadmap: how
++ * long after detection should the bot wait before evaluating a token?
++ *
++ *   npm run report:delay-probe
++ *   npm run report:delay-probe -- --file logs/delay-probe.jsonl
++ *   npm run report:delay-probe -- --out reports/my-delay-report.md
++ *   npm run report:delay-probe -- --min-wallets 20 --min-txs 30 --max-top-holder 20
++ *
++ * Note the space after `--` when passing flags through npm.
++ *
++ * Deliberately does NOT call loadConfig(): this reads a local log file only,
++ * and needing an RPC endpoint configured just to read a jsonl file would be
++ * absurd (the same reasoning as analyze-paper-performance.ts). No network
++ * calls of any kind.
++ */
++import fs from "fs";
++import path from "path";
++import {
++  analyzeDelayProbe,
++  DelayProbeRecord,
++  DelayProbeReport,
++  DelayBucketReport,
++  MetricStats,
++  DEFAULT_THRESHOLDS,
++} from "../src/analysis/delayProbeAnalysis";
++
++interface Args {
++  filePath: string;
++  outPath: string;
++  minWallets: number;
++  minTxs: number;
++  maxTopHolder: number;
++}
++
++function parseArgs(argv: string[]): Args {
++  const get = (flag: string): string | undefined => {
++    const i = argv.indexOf(flag);
++    return i !== -1 && i + 1 < argv.length ? argv[i + 1] : undefined;
++  };
++  const num = (flag: string, fallback: number): number => {
++    const v = get(flag);
++    if (v === undefined) return fallback;
++    const parsed = Number(v);
++    return Number.isFinite(parsed) ? parsed : fallback;
++  };
++  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
++  return {
++    filePath: get("--file") ?? "logs/delay-probe.jsonl",
++    outPath: get("--out") ?? path.join("reports", `delay-probe-${stamp}.md`),
++    minWallets: num("--min-wallets", DEFAULT_THRESHOLDS.minUniqueWallets),
++    minTxs: num("--min-txs", DEFAULT_THRESHOLDS.minTransactionCount),
++    maxTopHolder: num("--max-top-holder", DEFAULT_THRESHOLDS.maxTopHolderPercent),
++  };
++}
++
++/** Same three-way split as analyze-paper-performance.ts's readJsonl: missing
++ * file, empty file, and unparseable lines all mean something different when
++ * deciding whether to trust the report that follows. */
++function readJsonl(filePath: string): { records: DelayProbeRecord[]; missing: boolean; badLines: number } {
++  if (!fs.existsSync(filePath)) return { records: [], missing: true, badLines: 0 };
++  const raw = fs.readFileSync(filePath, "utf-8");
++  const lines = raw.split("\n").filter((l) => l.trim().length > 0);
++  const records: DelayProbeRecord[] = [];
++  let badLines = 0;
++  for (const line of lines) {
++    try {
++      records.push(JSON.parse(line) as DelayProbeRecord);
++    } catch {
++      badLines++;
++    }
++  }
++  return { records, missing: false, badLines };
++}
++
++const n = (v: number | null, digits = 1, suffix = ""): string => (v === null ? "n/a" : `${v.toFixed(digits)}${suffix}`);
++
++function metricRow(label: string, s: MetricStats, suffix = ""): string {
++  return `| ${label} | ${s.sampleSize} | ${s.nullCount} | ${n(s.min, 1, suffix)} | ${n(s.median, 1, suffix)} | ${n(
++    s.p90,
++    1,
++    suffix,
++  )} | ${n(s.max, 1, suffix)} |`;
++}
++
++function bucketSection(b: DelayBucketReport): string[] {
++  const L: string[] = [];
++  L.push(`### ${b.delaySeconds}s after detection`);
++  L.push("");
++  L.push(`Scheduled ${b.scheduled} -> ${b.ok} completed, ${b.errored} errored, ${b.dropped} dropped (queue full).`);
++  L.push("");
++  L.push(
++    `**Would-pass rate at current thresholds: ${n(b.passRate.passRatePercent, 1, "%")}** ` +
++      `(${b.passRate.passed}/${b.passRate.evaluable} evaluable observations - the rest were missing at least one of the three filtered metrics).`,
++  );
++  L.push("");
++  L.push("| Metric | n | null | min | median | p90 | max |");
++  L.push("|---|---|---|---|---|---|---|");
++  L.push(metricRow("Unique wallets", b.uniqueWallets));
++  L.push(metricRow("Transaction count", b.transactionCount));
++  L.push(metricRow("Top holder %", b.topHolderPercent, "%"));
++  L.push(metricRow("Liquidity (SOL)", b.liquiditySol));
++  L.push("");
++  return L;
++}
++
++function buildMarkdown(r: DelayProbeReport, args: Args, missing: boolean, badLines: number): string[] {
++  const L: string[] = [];
++  L.push("# Delay-probe report");
++  L.push("");
++  L.push(`Generated: ${new Date().toISOString()}`);
++  L.push(`Source:    \`${args.filePath}\``);
++  L.push(
++    `Thresholds evaluated: minUniqueWallets=${r.thresholds.minUniqueWallets}, ` +
++      `minTransactionCount=${r.thresholds.minTransactionCount}, maxTopHolderPercent=${r.thresholds.maxTopHolderPercent}`,
++  );
++  L.push("");
++
++  if (missing) {
++    L.push(
++      `> \`${args.filePath}\` does not exist yet. The delay probe writes here once the bot runs live ` +
++        "with `delayProbe.enabled: true` (the shipped default) - nothing to analyze until then.",
++    );
++    return L;
++  }
++
++  if (r.totalRecords === 0) {
++    L.push(`> \`${args.filePath}\` exists but is empty - no observations recorded yet.`);
++    return L;
++  }
++
++  L.push("## Coverage");
++  L.push("");
++  L.push(`- ${r.totalRecords} lines read (${r.coverageLines} coverage lines, ${r.buckets.reduce((s, b) => s + b.scheduled, 0)} observations)`);
++  L.push(`- ${r.distinctMints} distinct mints observed`);
++  if (badLines > 0) L.push(`- **${badLines} line(s) could not be parsed as JSON and were skipped.**`);
++  if (r.malformedRecords > 0) L.push(`- **${r.malformedRecords} record(s) had no usable delaySeconds and were excluded.**`);
++  L.push("");
++
++  if (r.buckets.length === 0) {
++    L.push("No observations at any delay yet - only coverage lines (or nothing) in the file.");
++    return L;
++  }
++
++  L.push("## Pass rate by delay");
++  L.push("");
++  L.push("The number that actually answers the question: how much older does a token need to be");
++  L.push("before the filters are even evaluable, and how many pass once they are.");
++  L.push("");
++  L.push("| Delay | Would-pass rate | Evaluable / OK / scheduled |");
++  L.push("|---|---|---|");
++  for (const b of r.buckets) {
++    L.push(
++      `| ${b.delaySeconds}s | ${n(b.passRate.passRatePercent, 1, "%")} | ${b.passRate.evaluable} / ${b.ok} / ${b.scheduled} |`,
++    );
++  }
++  L.push("");
++
++  L.push("## Detail by delay");
++  L.push("");
++  for (const b of r.buckets) L.push(...bucketSection(b));
++
++  L.push(
++    "> Picking a delay: look for where the pass rate stops climbing and the metric medians stop moving " +
++      "much between buckets - that's the point where waiting longer buys accuracy that isn't there yet, " +
++      "not the point where waiting less makes the filters stop being self-contradictory. Also weigh entry " +
++      "price against it: every extra second is more of the move already gone (see Strategy-and-Roadmap.md).",
++  );
++  L.push("");
++
++  return L;
++}
++
++function main() {
++  const args = parseArgs(process.argv.slice(2));
++  const { records, missing, badLines } = readJsonl(args.filePath);
++  const report = analyzeDelayProbe(records, {
++    minUniqueWallets: args.minWallets,
++    minTransactionCount: args.minTxs,
++    maxTopHolderPercent: args.maxTopHolder,
++  });
++
++  const lines = buildMarkdown(report, args, missing, badLines);
++  const markdown = lines.join("\n") + "\n";
++
++  console.log(markdown);
++
++  if (!missing) {
++    fs.mkdirSync(path.dirname(args.outPath), { recursive: true });
++    fs.writeFileSync(args.outPath, markdown);
++    console.log(`\nWritten to ${args.outPath}`);
++  }
++}
++
++main();
+diff --git a/src/analysis/delayProbeAnalysis.ts b/src/analysis/delayProbeAnalysis.ts
+new file mode 100644
+index 0000000..64b9f5f
+--- /dev/null
++++ b/src/analysis/delayProbeAnalysis.ts
+@@ -0,0 +1,203 @@
++/**
++ * Turns raw `logs/delay-probe.jsonl` observations into the one thing the
++ * roadmap actually needs: at 30s / 120s / 300s, how many tokens would pass
++ * the CURRENT filters (minUniqueWallets, minTransactionCount,
++ * maxTopHolderPercent), and how do the underlying numbers move with age.
++ *
++ * Deliberately pure - no fs, no config, no network - so it can be unit
++ * tested with synthetic records and reused by the CLI script under
++ * scripts/. This mirrors src/analysis/paperPerformance.ts's split.
++ */
++
++/** Mirrors DelayProbeRecord in src/data/delayProbe.ts. Duplicated rather than
++ * imported so this module (and its tests) stay import-clean of anything that
++ * eventually pulls in loadConfig() - see scripts/analyze-delay-probe.ts. */
++export interface DelayProbeRecord {
++  mint: string;
++  source?: string;
++  signature?: string;
++  detectedAt?: string;
++  delaySeconds: number;
++  actualElapsedMs: number;
++  queueWaitMs?: number;
++  ok: boolean;
++  error: string | null;
++  uniqueWalletCount: number | null;
++  transactionCount: number | null;
++  topHolderPercent: number | null;
++  liquiditySol: number | null;
++  devWalletPercent?: number | null;
++  mintAuthorityRenounced?: boolean | null;
++  freezeAuthorityRenounced?: boolean | null;
++  warnings?: string[];
++  collectionMs?: number | null;
++  /** Only present on the periodic coverage line DelayProbe.recordStats() writes. */
++  event?: string;
++}
++
++export interface FilterThresholds {
++  minUniqueWallets: number;
++  minTransactionCount: number;
++  maxTopHolderPercent: number;
++}
++
++/** config/default.json's shipped values - the CLI's default, overridable by flag
++ * so a re-tune doesn't silently make old reports mean something different. */
++export const DEFAULT_THRESHOLDS: FilterThresholds = {
++  minUniqueWallets: 20,
++  minTransactionCount: 30,
++  maxTopHolderPercent: 20,
++};
++
++export interface MetricStats {
++  /** How many OK observations had a non-null value for this metric. */
++  sampleSize: number;
++  /** How many OK observations had null instead - a real gap, not a zero. */
++  nullCount: number;
++  min: number | null;
++  median: number | null;
++  p90: number | null;
++  max: number | null;
++}
++
++export interface DelayBucketReport {
++  delaySeconds: number;
++  /** Every job scheduled at this delay, including drops and errors. */
++  scheduled: number;
++  ok: number;
++  /** ok:false with a real fetch error (not a queue drop). */
++  errored: number;
++  /** ok:false because the probe queue was full - the observation was never attempted. */
++  dropped: number;
++  uniqueWallets: MetricStats;
++  transactionCount: MetricStats;
++  topHolderPercent: MetricStats;
++  liquiditySol: MetricStats;
++  /** Of the OK observations where all three filtered metrics are non-null,
++   * the fraction that would PASS the given thresholds today. */
++  passRate: {
++    /** OK observations with uniqueWalletCount, transactionCount AND topHolderPercent
++     * all non-null - the only ones a real pass/fail verdict can be computed for. */
++    evaluable: number;
++    passed: number;
++    passRatePercent: number | null;
++  };
++}
++
++export interface DelayProbeReport {
++  thresholds: FilterThresholds;
++  totalRecords: number;
++  /** Coverage lines (event: "probe-stats") are informational, not observations - counted separately. */
++  coverageLines: number;
++  distinctMints: number;
++  malformedRecords: number;
++  buckets: DelayBucketReport[];
++}
++
++function isCoverageLine(r: DelayProbeRecord): boolean {
++  return r.event === "probe-stats";
++}
++
++function median(sorted: number[]): number | null {
++  if (sorted.length === 0) return null;
++  const mid = Math.floor(sorted.length / 2);
++  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
++}
++
++function percentile(sorted: number[], p: number): number | null {
++  if (sorted.length === 0) return null;
++  if (sorted.length === 1) return sorted[0];
++  // Nearest-rank, clamped - fine for report-grade estimates, not a stats library.
++  const idx = Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1);
++  return sorted[Math.max(0, idx)];
++}
++
++function statsFor(values: Array<number | null>): MetricStats {
++  const present = values.filter((v): v is number => v !== null && !Number.isNaN(v));
++  const sorted = [...present].sort((a, b) => a - b);
++  return {
++    sampleSize: present.length,
++    nullCount: values.length - present.length,
++    min: sorted.length > 0 ? sorted[0] : null,
++    median: median(sorted),
++    p90: percentile(sorted, 90),
++    max: sorted.length > 0 ? sorted[sorted.length - 1] : null,
++  };
++}
++
++/**
++ * Groups by delaySeconds and computes, per bucket, the metric distributions
++ * and the pass rate against `thresholds`. Records with ok:false are counted
++ * toward `errored` or `dropped` but excluded from every metric/pass-rate
++ * computation - a failed observation has no numbers, not zero numbers.
++ */
++export function analyzeDelayProbe(
++  records: DelayProbeRecord[],
++  thresholds: FilterThresholds = DEFAULT_THRESHOLDS,
++): DelayProbeReport {
++  const coverageLines = records.filter(isCoverageLine);
++  const observations = records.filter((r) => !isCoverageLine(r));
++
++  const mints = new Set(observations.map((r) => r.mint).filter(Boolean));
++
++  const byDelay = new Map<number, DelayProbeRecord[]>();
++  for (const r of observations) {
++    const arr = byDelay.get(r.delaySeconds) ?? [];
++    arr.push(r);
++    byDelay.set(r.delaySeconds, arr);
++  }
++
++  const buckets: DelayBucketReport[] = [...byDelay.keys()]
++    .sort((a, b) => a - b)
++    .map((delaySeconds) => {
++      const group = byDelay.get(delaySeconds)!;
++      const dropped = group.filter((r) => !r.ok && r.error?.startsWith("dropped")).length;
++      const errored = group.filter((r) => !r.ok && !r.error?.startsWith("dropped")).length;
++      const ok = group.filter((r) => r.ok);
++
++      const uniqueWallets = statsFor(ok.map((r) => r.uniqueWalletCount));
++      const transactionCount = statsFor(ok.map((r) => r.transactionCount));
++      const topHolderPercent = statsFor(ok.map((r) => r.topHolderPercent));
++      const liquiditySol = statsFor(ok.map((r) => r.liquiditySol));
++
++      const evaluableRecords = ok.filter(
++        (r) => r.uniqueWalletCount !== null && r.transactionCount !== null && r.topHolderPercent !== null,
++      );
++      const passed = evaluableRecords.filter(
++        (r) =>
++          r.uniqueWalletCount! >= thresholds.minUniqueWallets &&
++          r.transactionCount! >= thresholds.minTransactionCount &&
++          r.topHolderPercent! <= thresholds.maxTopHolderPercent,
++      ).length;
++
++      return {
++        delaySeconds,
++        scheduled: group.length,
++        ok: ok.length,
++        errored,
++        dropped,
++        uniqueWallets,
++        transactionCount,
++        topHolderPercent,
++        liquiditySol,
++        passRate: {
++          evaluable: evaluableRecords.length,
++          passed,
++          passRatePercent: evaluableRecords.length > 0 ? (passed / evaluableRecords.length) * 100 : null,
++        },
++      };
++    });
++
++  // A record with no numeric delaySeconds at all (parse survived JSON.parse
++  // but the shape is wrong) would otherwise sort into NaN silently.
++  const malformedRecords = observations.filter((r) => typeof r.delaySeconds !== "number" || Number.isNaN(r.delaySeconds)).length;
++
++  return {
++    thresholds,
++    totalRecords: records.length,
++    coverageLines: coverageLines.length,
++    distinctMints: mints.size,
++    malformedRecords,
++    buckets: buckets.filter((b) => !Number.isNaN(b.delaySeconds)),
++  };
++}
+diff --git a/tests/run-all.ts b/tests/run-all.ts
+index 617c6d5..3b71939 100644
+--- a/tests/run-all.ts
++++ b/tests/run-all.ts
+@@ -28,6 +28,7 @@ const suites = [
+   { name: "Paper-trading performance analyzer (offline)", script: "tests/test-paper-performance.ts" },
+   { name: "Two-stage metrics + work queue (offline)", script: "tests/test-two-stage-metrics.ts" },
+   { name: "Delay-probe scheduling (offline)", script: "tests/test-delay-probe.ts" },
++  { name: "Delay-probe report analysis (offline)", script: "tests/test-delay-probe-report.ts" },
+   { name: "Swap priority fee (offline)", script: "tests/test-priority-fee.ts" },
+ ];
+ 
+diff --git a/tests/test-delay-probe-report.ts b/tests/test-delay-probe-report.ts
+new file mode 100644
+index 0000000..ec6e68a
+--- /dev/null
++++ b/tests/test-delay-probe-report.ts
+@@ -0,0 +1,168 @@
++/**
++ * src/analysis/delayProbeAnalysis.ts - pure aggregation, no fs/network. Feeds
++ * scripts/analyze-delay-probe.ts, which is the tool that actually answers
++ * the roadmap's top open question (what delay to evaluate tokens at), so
++ * getting the arithmetic right here matters more than most report code.
++ *
++ * Run with: npm run test:delay-probe-report
++ */
++import { analyzeDelayProbe, DelayProbeRecord, DEFAULT_THRESHOLDS } from "../src/analysis/delayProbeAnalysis";
++
++let pass = 0;
++let fail = 0;
++function check(name: string, condition: boolean) {
++  if (condition) {
++    console.log(`  PASS: ${name}`);
++    pass++;
++  } else {
++    console.error(`  FAIL: ${name}`);
++    fail++;
++  }
++}
++
++function ok(delaySeconds: number, overrides: Partial<DelayProbeRecord> = {}): DelayProbeRecord {
++  return {
++    mint: overrides.mint ?? `mint-${Math.random()}`,
++    delaySeconds,
++    actualElapsedMs: delaySeconds * 1000,
++    ok: true,
++    error: null,
++    uniqueWalletCount: 25,
++    transactionCount: 40,
++    topHolderPercent: 15,
++    liquiditySol: 12,
++    ...overrides,
++  };
++}
++
++function main() {
++  console.log("=== Delay-probe report analysis (offline) ===");
++
++  // ---------------------------------------------------------------
++  console.log("\n-- empty input --");
++  {
++    const r = analyzeDelayProbe([]);
++    check("no records -> totalRecords 0", r.totalRecords === 0);
++    check("no records -> no buckets", r.buckets.length === 0);
++    check("no records -> zero distinct mints", r.distinctMints === 0);
++  }
++
++  // ---------------------------------------------------------------
++  console.log("\n-- coverage lines are counted separately, never treated as observations --");
++  {
++    const records: DelayProbeRecord[] = [
++      { event: "probe-stats", delaySeconds: NaN as any, actualElapsedMs: 0, ok: true, error: null, uniqueWalletCount: null, transactionCount: null, topHolderPercent: null, liquiditySol: null, mint: "" } as any,
++      ok(30),
++    ];
++    const r = analyzeDelayProbe(records);
++    check("coverage line counted", r.coverageLines === 1);
++    check("coverage line did not become a bucket observation", r.buckets.find((b) => b.delaySeconds === 30)!.scheduled === 1);
++    check("totalRecords still counts everything read", r.totalRecords === 2);
++  }
++
++  // ---------------------------------------------------------------
++  console.log("\n-- dropped vs errored are told apart, and both excluded from stats --");
++  {
++    const records: DelayProbeRecord[] = [
++      ok(30),
++      { mint: "m2", delaySeconds: 30, actualElapsedMs: -1, ok: false, error: "dropped - probe queue full, observation never taken", uniqueWalletCount: null, transactionCount: null, topHolderPercent: null, liquiditySol: null },
++      { mint: "m3", delaySeconds: 30, actualElapsedMs: 30500, ok: false, error: "RPC timeout after 20000ms", uniqueWalletCount: null, transactionCount: null, topHolderPercent: null, liquiditySol: null },
++    ];
++    const r = analyzeDelayProbe(records);
++    const b = r.buckets[0];
++    check("scheduled counts everything", b.scheduled === 3);
++    check("exactly one dropped", b.dropped === 1);
++    check("exactly one errored (not counted as dropped)", b.errored === 1);
++    check("exactly one ok", b.ok === 1);
++    check("stats only reflect the ok record", b.uniqueWallets.sampleSize === 1);
++  }
++
++  // ---------------------------------------------------------------
++  console.log("\n-- median/p90/min/max on a known distribution --");
++  {
++    const values = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
++    const records = values.map((v) => ok(30, { uniqueWalletCount: v }));
++    const r = analyzeDelayProbe(records);
++    const stats = r.buckets[0].uniqueWallets;
++    check("sample size matches", stats.sampleSize === 10);
++    check("min is 10", stats.min === 10);
++    check("max is 100", stats.max === 100);
++    check("median of 10 values averages the middle two (50 & 60 -> 55)", stats.median === 55);
++    check("p90 is a high value, not the max itself for this method", stats.p90 !== null && stats.p90! >= 80 && stats.p90! <= 100);
++  }
++
++  // ---------------------------------------------------------------
++  console.log("\n-- null values are counted, never averaged in as zero --");
++  {
++    const records = [
++      ok(30, { uniqueWalletCount: 20 }),
++      ok(30, { uniqueWalletCount: null }),
++      ok(30, { uniqueWalletCount: 40 }),
++    ];
++    const r = analyzeDelayProbe(records);
++    const stats = r.buckets[0].uniqueWallets;
++    check("nullCount is 1", stats.nullCount === 1);
++    check("sampleSize excludes the null", stats.sampleSize === 2);
++    check("median is over {20,40} only, not {20,0,40}", stats.median === 30);
++  }
++
++  // ---------------------------------------------------------------
++  console.log("\n-- pass rate: only fully-evaluable OK observations count, thresholds are exact boundaries --");
++  {
++    const records = [
++      // Exactly at threshold on all three -> passes (>=, >=, <=)
++      ok(30, { uniqueWalletCount: 20, transactionCount: 30, topHolderPercent: 20 }),
++      // One point short on wallets -> fails
++      ok(30, { uniqueWalletCount: 19, transactionCount: 30, topHolderPercent: 20 }),
++      // Missing a required field entirely -> excluded from evaluable, not counted as a fail
++      ok(30, { uniqueWalletCount: 25, transactionCount: null, topHolderPercent: 10 }),
++    ];
++    const r = analyzeDelayProbe(records, DEFAULT_THRESHOLDS);
++    const p = r.buckets[0].passRate;
++    check("evaluable excludes the record with a null field", p.evaluable === 2);
++    check("exactly one of the evaluable two passed", p.passed === 1);
++    check("passRatePercent is 50%", p.passRatePercent === 50);
++  }
++
++  // ---------------------------------------------------------------
++  console.log("\n-- pass rate is null, not 0%, when nothing is evaluable --");
++  {
++    const records = [ok(30, { transactionCount: null })];
++    const r = analyzeDelayProbe(records);
++    check("evaluable is 0", r.buckets[0].passRate.evaluable === 0);
++    check("passRatePercent is null, not 0 (0% would imply a real failing measurement)", r.buckets[0].passRate.passRatePercent === null);
++  }
++
++  // ---------------------------------------------------------------
++  console.log("\n-- multiple delays: separate buckets, sorted ascending regardless of input order --");
++  {
++    const records = [ok(300), ok(30), ok(120), ok(30)];
++    const r = analyzeDelayProbe(records);
++    check("three buckets", r.buckets.length === 3);
++    check("sorted ascending", r.buckets.map((b) => b.delaySeconds).join(",") === "30,120,300");
++    check("30s bucket has both 30s observations", r.buckets[0].scheduled === 2);
++  }
++
++  // ---------------------------------------------------------------
++  console.log("\n-- distinct mints are counted across the whole file, not per bucket --");
++  {
++    const records = [ok(30, { mint: "A" }), ok(120, { mint: "A" }), ok(30, { mint: "B" })];
++    const r = analyzeDelayProbe(records);
++    check("2 distinct mints even though A appears twice", r.distinctMints === 2);
++  }
++
++  // ---------------------------------------------------------------
++  console.log("\n-- a record with an unusable delaySeconds is excluded, not silently grouped under NaN --");
++  {
++    const records = [ok(30), { ...ok(30), delaySeconds: NaN }];
++    const r = analyzeDelayProbe(records);
++    check("malformedRecords counted the NaN one", r.malformedRecords === 1);
++    check("no NaN bucket leaked through", r.buckets.every((b) => !Number.isNaN(b.delaySeconds)));
++    check("the good record's bucket is unaffected", r.buckets[0].scheduled === 1);
++  }
++
++  console.log(`\nTotal: ${pass} passed, ${fail} failed`);
++  if (fail > 0) process.exit(1);
++}
++
++main();
+-- 
+2.43.0
+

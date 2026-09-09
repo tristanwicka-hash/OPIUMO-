@@ -31,6 +31,7 @@ const suites = [
   { name: "Delay-probe report analysis (offline)", script: "tests/test-delay-probe-report.ts" },
   { name: "Swap priority fee (offline)", script: "tests/test-priority-fee.ts" },
   { name: "Outcome analysis (offline)", script: "tests/test-outcome-analysis.ts" },
+  { name: "Outcome tracker state (offline)", script: "tests/test-outcome-tracker.ts" },
 ];
 
 let anyFailed = false;

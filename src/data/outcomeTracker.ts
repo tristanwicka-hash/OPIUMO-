@@ -80,8 +80,36 @@ export interface OutcomeRecord {
   replayedAfterRestart: boolean;
 }
 
+/**
+ * The only fields an outcome check actually needs.
+ *
+ * Deliberately NOT the whole NewPoolEvent. Pending checkpoints are held on disk
+ * for up to the longest checkpoint (24h by default), so at ~20 detections/min
+ * the full event costs ~525 bytes x ~39,000 pending entries ~= 20MB of state
+ * carrying vault addresses, creator, slot and LP mints that no balance read
+ * uses. Storing five fields instead roughly halves that.
+ */
+export interface TrackedEvent {
+  source: string;
+  signature: string;
+  mint: string;
+  poolAddress?: string;
+  detectedAt: string;
+}
+
+function trackedEventOf(event: NewPoolEvent): TrackedEvent {
+  return {
+    source: event.source,
+    signature: event.signature,
+    mint: event.mint,
+    poolAddress: event.poolAddress,
+    detectedAt: event.detectedAt,
+  };
+}
+
 interface PendingCheckpoint {
-  event: NewPoolEvent;
+  /** Older state files hold a full NewPoolEvent here; its extra fields are simply ignored on restore. */
+  event: TrackedEvent;
   checkpointSeconds: number;
   /** Absolute epoch ms this is due - survives restarts, unlike a relative timer. */
   dueAtMs: number;
@@ -102,6 +130,11 @@ export class OutcomeTracker {
   /** Keyed `${mint}:${checkpointSeconds}` so a replayed checkpoint can't be scheduled twice. */
   private readonly pending = new Map<string, PendingCheckpoint>();
   private readonly statePath: string;
+
+  /** Pending debounced write, so persistence cost does not scale with detection rate. */
+  private persistTimer: NodeJS.Timeout | null = null;
+  private persistDirty = false;
+  private capWarnedAt = 0;
 
   private scheduled = 0;
   private completed = 0;
@@ -194,7 +227,7 @@ export class OutcomeTracker {
           (this.missed > 0 ? `, ${this.missed} were too late to take and were recorded as missed` : "")
       );
     }
-    this.persist();
+    this.persistNow();
   }
 
   /**
@@ -205,19 +238,31 @@ export class OutcomeTracker {
     if (!this.config.enabled || this.stopped) return;
     if (this.config.sampleRate < 1 && Math.random() >= this.config.sampleRate) return;
     if (this.pending.size >= this.config.maxPendingCheckpoints) {
-      this.logger.warn(
-        `not tracking outcomes for ${event.mint}: ${this.pending.size} checkpoints already pending ` +
-          `(outcomeTracker.maxPendingCheckpoints)`
-      );
+      // Rate-limited, because at the cap this would otherwise fire on every
+      // detection. The consequence is spelled out rather than just the fact:
+      // once full, the tracker stops sampling NEW tokens, so the sample quietly
+      // becomes "whatever launched in the first N minutes after a restart"
+      // rather than a random draw - which is a bias, not just a shortfall.
+      const nowMs = Date.now();
+      if (nowMs - this.capWarnedAt > 60_000) {
+        this.capWarnedAt = nowMs;
+        this.logger.warn(
+          `outcome tracking is at capacity (${this.pending.size}/${this.config.maxPendingCheckpoints} pending) ` +
+            `and is no longer following new tokens. Steady-state demand is roughly ` +
+            `(detections/min) x (longest checkpoint in min); raise outcomeTracker.maxPendingCheckpoints to match, ` +
+            `or the sample becomes biased toward tokens launched just after a restart.`
+        );
+      }
       return;
     }
 
     const nowMs = Date.now();
+    const tracked = trackedEventOf(event);
     for (const checkpointSeconds of this.config.checkpointsSeconds) {
       const key = this.keyOf(event.mint, checkpointSeconds);
       if (this.pending.has(key)) continue;
       const p: PendingCheckpoint = {
-        event,
+        event: tracked,
         checkpointSeconds,
         dueAtMs: nowMs + checkpointSeconds * 1000,
         baselineLiquiditySol,
@@ -286,9 +331,32 @@ export class OutcomeTracker {
     this.jsonl.append(record as unknown as Record<string, unknown>);
   }
 
-  /** Pending checkpoints, written atomically so a crash mid-write can't corrupt the file. */
+  /**
+   * Marks state dirty and schedules a write, rather than writing immediately.
+   *
+   * The whole map is serialised per write, so writing on every schedule() and
+   * every completion made write cost scale with BOTH pending size and detection
+   * rate - a synchronous multi-megabyte rewrite tens of times a minute, on the
+   * detection path. Debouncing bounds it to one write per persistDebounceMs no
+   * matter how fast tokens arrive. The exposure is the last few seconds of
+   * pending state on a hard kill; those checkpoints are re-derivable from the
+   * decision log, and a SIGINT still flushes synchronously via stop().
+   */
   private persist(): void {
     if (!this.config.enabled) return;
+    this.persistDirty = true;
+    if (this.persistTimer) return;
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = null;
+      if (this.persistDirty) this.persistNow();
+    }, this.config.persistDebounceMs);
+    this.persistTimer.unref?.();
+  }
+
+  /** Pending checkpoints, written atomically so a crash mid-write can't corrupt the file. */
+  private persistNow(): void {
+    if (!this.config.enabled) return;
+    this.persistDirty = false;
     try {
       const dir = path.dirname(this.statePath);
       if (dir && !fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -318,7 +386,13 @@ export class OutcomeTracker {
     this.stopped = true;
     for (const t of this.timers) clearTimeout(t);
     this.timers.clear();
-    // Pending checkpoints stay on disk deliberately: the next run replays them.
-    this.persist();
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = null;
+    }
+    // Flush synchronously, not debounced - shutdown is exactly when a deferred
+    // write would be lost. Pending checkpoints stay on disk deliberately: the
+    // next run replays them.
+    this.persistNow();
   }
 }

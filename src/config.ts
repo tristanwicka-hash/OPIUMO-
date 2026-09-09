@@ -167,6 +167,13 @@ export interface OutcomeTrackerConfig {
   /** Where pending checkpoints are persisted so a restart doesn't silently drop a 24h reading. */
   pendingStateFile: string;
   /**
+   * Minimum gap between writes of the pending-state file. The whole map is
+   * serialised per write, so writing on every event made cost scale with both
+   * pending size and detection rate. The exposure is the last few seconds of
+   * pending state on a hard kill; SIGINT still flushes synchronously.
+   */
+  persistDebounceMs: number;
+  /**
    * How overdue a restored checkpoint may be and still be taken. Beyond this it
    * is recorded as missed, because filing a badly-late reading as an on-time
    * one corrupts the distribution this exists to measure.
@@ -305,6 +312,17 @@ function validate(config: AppConfig): void {
     if (config.outcomeTracker.maxQueuedChecks <= 0) errors.push("outcomeTracker.maxQueuedChecks must be > 0");
     if (config.outcomeTracker.maxPendingCheckpoints <= 0) errors.push("outcomeTracker.maxPendingCheckpoints must be > 0");
     if (config.outcomeTracker.lateToleranceMs <= 0) errors.push("outcomeTracker.lateToleranceMs must be > 0");
+    if (config.outcomeTracker.persistDebounceMs < 0) errors.push("outcomeTracker.persistDebounceMs must be >= 0");
+    // Not a hard error - the right value depends on the launch rate, which varies - but a cap
+    // far below steady-state demand silently biases the sample rather than merely shortening it.
+    const longestCheckpointMin = Math.max(...config.outcomeTracker.checkpointsSeconds) / 60;
+    if (config.outcomeTracker.maxPendingCheckpoints < longestCheckpointMin * config.outcomeTracker.checkpointsSeconds.length) {
+      errors.push(
+        `outcomeTracker.maxPendingCheckpoints (${config.outcomeTracker.maxPendingCheckpoints}) cannot hold even one ` +
+          `token per minute out to the longest checkpoint (${Math.round(longestCheckpointMin)} min). Steady-state demand is ` +
+          `roughly (detections/min) x (longest checkpoint in min) x (number of checkpoints).`
+      );
+    }
     if (!config.outcomeTracker.pendingStateFile) errors.push("outcomeTracker.pendingStateFile must be set");
     if (config.outcomeTracker.sampleRate <= 0 || config.outcomeTracker.sampleRate > 1) {
       errors.push("outcomeTracker.sampleRate must be > 0 and <= 1");

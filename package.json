@@ -37,6 +37,7 @@
     "test:delay-probe": "ts-node tests/test-delay-probe.ts",
     "test:delay-probe-report": "ts-node tests/test-delay-probe-report.ts",
     "test:outcomes": "ts-node tests/test-outcome-analysis.ts",
+    "test:outcome-tracker": "ts-node tests/test-outcome-tracker.ts",
     "test:priority-fee": "ts-node tests/test-priority-fee.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
