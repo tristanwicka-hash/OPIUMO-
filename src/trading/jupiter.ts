@@ -72,19 +72,52 @@ export async function getQuote(
   return (await res.json()) as JupiterQuote;
 }
 
-async function getSwapTransactionBase64(quote: JupiterQuote, userPublicKey: string): Promise<string> {
+/**
+ * Builds the POST body for Jupiter's /swap endpoint.
+ *
+ * Split out as a pure function so the priority-fee behaviour can be asserted
+ * exactly, without mocking a Connection, a Keypair and a whole send/confirm
+ * cycle just to inspect one field.
+ *
+ * `dynamicComputeUnitLimit` (already present) sets the compute LIMIT - how many
+ * units the transaction may consume. It is NOT a priority fee and does nothing
+ * for inclusion order. `prioritizationFeeLamports` is the actual price paid to
+ * be picked up sooner, and until now no transaction requested one at all.
+ *
+ * A fee of 0 omits the field entirely rather than sending
+ * `prioritizationFeeLamports: 0`, so a zero-fee request is byte-identical to
+ * what this code sent before the field existed. That keeps the buy path
+ * provably unchanged.
+ */
+export function buildSwapRequestBody(
+  quote: JupiterQuote,
+  userPublicKey: string,
+  priorityFeeLamports: number
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    quoteResponse: quote,
+    userPublicKey,
+    wrapAndUnwrapSol: true,
+    dynamicComputeUnitLimit: true,
+  };
+  if (priorityFeeLamports > 0) {
+    body.prioritizationFeeLamports = Math.floor(priorityFeeLamports);
+  }
+  return body;
+}
+
+export async function getSwapTransactionBase64(
+  quote: JupiterQuote,
+  userPublicKey: string,
+  priorityFeeLamports = 0
+): Promise<string> {
   const config = loadConfig();
   const res = await fetchWithDescriptiveErrors(
     config.jupiter.swapApiUrl,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        quoteResponse: quote,
-        userPublicKey,
-        wrapAndUnwrapSol: true,
-        dynamicComputeUnitLimit: true,
-      }),
+      body: JSON.stringify(buildSwapRequestBody(quote, userPublicKey, priorityFeeLamports)),
     },
     config.jupiter.requestTimeoutMs,
     "Jupiter swap tx build"
@@ -116,7 +149,14 @@ export async function executeSwap(
   inputMint: string,
   outputMint: string,
   amountRaw: string,
-  slippageBps: number
+  slippageBps: number,
+  /**
+   * Lamports to attach as a priority fee. Passed in by the caller rather than
+   * read from config here: this layer has no buy/sell concept (direction is
+   * just which mint is input vs output), and src/trading/engine.ts is where
+   * that distinction lives. 0 means no fee field is sent at all.
+   */
+  priorityFeeLamports = 0
 ): Promise<SwapResult> {
   const quote = await getQuote(inputMint, outputMint, amountRaw, slippageBps);
   logger.info(
@@ -124,7 +164,10 @@ export async function executeSwap(
       `(price impact ${quote.priceImpactPct}%)`
   );
 
-  const swapTxBase64 = await getSwapTransactionBase64(quote, wallet.publicKey.toBase58());
+  if (priorityFeeLamports > 0) {
+    logger.info(`Attaching priority fee: ${priorityFeeLamports} lamports (${priorityFeeLamports / 1e9} SOL)`);
+  }
+  const swapTxBase64 = await getSwapTransactionBase64(quote, wallet.publicKey.toBase58(), priorityFeeLamports);
   const tx = VersionedTransaction.deserialize(Buffer.from(swapTxBase64, "base64"));
   tx.sign([wallet]);
 

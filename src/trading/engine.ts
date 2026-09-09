@@ -129,7 +129,17 @@ export class SpotTradingEngine {
       const buyLamports = Math.round(sizing.positionSizeSol * LAMPORTS_PER_SOL);
       const swap: SwapResult = config.trading.paperTrading
         ? await this.simulateFill(SOL_MINT, event.mint, String(buyLamports), config.trading.maxSlippageBps)
-        : await executeSwap(this.connection, this.wallet as Keypair, SOL_MINT, event.mint, String(buyLamports), config.trading.maxSlippageBps);
+        : await executeSwap(
+            this.connection,
+            this.wallet as Keypair,
+            SOL_MINT,
+            event.mint,
+            String(buyLamports),
+            config.trading.maxSlippageBps,
+            // Defaults to 0: a buy that does not land costs an opportunity, not
+            // money, and this bot deliberately does not race on entry.
+            config.trading.buyPriorityFeeLamports
+          );
 
       const entryPriceSol = Number(swap.inAmountRaw) / LAMPORTS_PER_SOL / Number(swap.outAmountRaw);
       const stopLossPriceSol = entryPriceSol * (1 + config.trading.fallbackStopLossPercent / 100);
@@ -375,7 +385,18 @@ export class SpotTradingEngine {
     try {
       const swap: SwapResult = config.trading.paperTrading
         ? await this.simulateFill(position.mint, SOL_MINT, String(sellAmountRaw), config.trading.maxSlippageBps)
-        : await executeSwap(this.connection, this.wallet as Keypair, position.mint, SOL_MINT, String(sellAmountRaw), config.trading.maxSlippageBps);
+        : await executeSwap(
+            this.connection,
+            this.wallet as Keypair,
+            position.mint,
+            SOL_MINT,
+            String(sellAmountRaw),
+            config.trading.maxSlippageBps,
+            // The side that matters. An unprioritised sell queues behind
+            // everyone else trying to exit the same dumping token, and a late
+            // exit is a realised loss rather than a missed chance.
+            config.trading.sellPriorityFeeLamports
+          );
       const solReceived = Number(swap.outAmountRaw) / LAMPORTS_PER_SOL;
       const costBasisSol = (sellAmountRaw / position.entrySizeTokens) * (position.entrySizeTokens * position.entryPriceSol);
       const pnlSol = solReceived - costBasisSol;

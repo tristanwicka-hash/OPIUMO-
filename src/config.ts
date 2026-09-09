@@ -45,6 +45,18 @@ export interface TradingConfig {
   /** Caps how many positions can be open AT ONCE - each trade respects the 1% hard cap individually, but nothing else stops 50 of them stacking up. Not in the original spec; added because that gap was worth closing. */
   maxOpenPositions: number;
   maxSlippageBps: number;
+  /**
+   * Priority fee in lamports attached to SELL/exit swaps. Sells are the side
+   * that matters: failing to exit a dumping token costs real money, and that is
+   * precisely when the block is contested.
+   */
+  sellPriorityFeeLamports: number;
+  /**
+   * Priority fee for BUY/entry swaps. Defaults to 0 - a missed buy is an
+   * opportunity cost, not a loss, and this bot deliberately does not compete on
+   * entry speed. Kept configurable rather than hardcoded to 0.
+   */
+  buyPriorityFeeLamports: number;
   takeProfitLadder: TakeProfitStep[];
   /** ATR-based stop-loss: stopLossPrice = entryPrice - (atrStopMultiplier * ATR(atrPeriod)). */
   atrPeriod: number;
@@ -235,6 +247,8 @@ function validate(config: AppConfig): void {
   if (config.trading.atrStopMultiplier <= 0) errors.push("trading.atrStopMultiplier must be > 0");
   if (config.trading.fallbackStopLossPercent >= 0) errors.push("trading.fallbackStopLossPercent must be negative (e.g. -30)");
   if (config.trading.maxOpenPositions <= 0) errors.push("trading.maxOpenPositions must be > 0");
+  if (config.trading.sellPriorityFeeLamports < 0) errors.push("trading.sellPriorityFeeLamports must be >= 0 (lamports)");
+  if (config.trading.buyPriorityFeeLamports < 0) errors.push("trading.buyPriorityFeeLamports must be >= 0 (lamports)");
   if (config.polling.maxConcurrentTokens <= 0) errors.push("polling.maxConcurrentTokens must be > 0 (set it to 1 to process one token at a time)");
   if (config.polling.maxQueuedTokens <= 0) errors.push("polling.maxQueuedTokens must be > 0");
   if (config.delayProbe.enabled) {

@@ -16,6 +16,9 @@
     "riskPercentPerTrade": 0.75,
     "maxOpenPositions": 5,
     "maxSlippageBps": 300,
+    "_priorityFeeComment": "Priority fee (lamports) attached to swap transactions, asymmetric ON PURPOSE. A SELL that fails to land leaves you holding a position that is actively losing value - real money out the door - and sells are exactly when contention spikes, because everyone is trying to exit the same token at once. A BUY that fails to land just leaves you with no position: an opportunity cost, not a loss. Paying for buy priority also buys a speed edge this strategy does not use (see the standing 'do not compete on execution speed' decision - the filters need seconds of data, so this bot was never in the first-block race), and it would be spent on every entry attempt including the ones that would have landed anyway. buyPriorityFeeLamports is therefore 0, but the key exists so it can be tuned without a code change. 100000 lamports = 0.0001 SOL. Nothing here fires while paperTrading is true - no real transaction is ever built.",
+    "sellPriorityFeeLamports": 100000,
+    "buyPriorityFeeLamports": 0,
     "takeProfitLadder": [
       { "atMultipleOfEntry": 2, "sellPercentOfRemaining": 50 },
       { "atMultipleOfEntry": 5, "sellPercentOfRemaining": 25 },
