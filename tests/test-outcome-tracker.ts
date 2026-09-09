@@ -49,6 +49,7 @@ function evt(mint: string): NewPoolEvent {
 
 function makeTracker(over: Record<string, unknown> = {}, name = "state") {
   const statePath = path.join(tmpDir, `${name}-${Math.random().toString(36).slice(2)}.json`);
+  const logPath = path.join(tmpDir, `${name}-outcomes.jsonl`);
   const tracker = new OutcomeTracker(connection, {
     enabled: true,
     checkpointsSeconds: [3600, 21600, 86400],
@@ -60,8 +61,8 @@ function makeTracker(over: Record<string, unknown> = {}, name = "state") {
     lateToleranceMs: 3_600_000,
     persistDebounceMs: 50,
     ...over,
-  } as any);
-  return { tracker, statePath };
+  } as any, logPath);
+  return { tracker, statePath, logPath };
 }
 
 const readState = (p: string): any[] => (fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, "utf8")) : []);
@@ -149,7 +150,7 @@ async function main() {
       pendingStateFile: statePath,
       lateToleranceMs: 3_600_000,
       persistDebounceMs: 10,
-    } as any);
+    } as any, path.join(tmpDir, "legacy-outcomes.jsonl"));
     tracker.restorePending();
     check("a legacy entry is restored, not discarded", tracker.stats().pendingCheckpoints === 1);
     check("it counts as replayed", tracker.stats().replayedAfterRestart === 1);
@@ -159,6 +160,7 @@ async function main() {
   console.log("\n=== Restore: badly overdue checkpoints are recorded as missed, not taken late ===\n");
   {
     const statePath = path.join(tmpDir, "overdue.json");
+    const overdueLogPath = path.join(tmpDir, "overdue-outcomes.jsonl");
     fs.writeFileSync(
       statePath,
       JSON.stringify([
@@ -181,7 +183,7 @@ async function main() {
       pendingStateFile: statePath,
       lateToleranceMs: 3_600_000,
       persistDebounceMs: 10,
-    } as any);
+    } as any, overdueLogPath);
     tracker.restorePending();
     const s = tracker.stats();
     check("the overdue checkpoint is NOT scheduled", s.pendingCheckpoints === 0, `pending=${s.pendingCheckpoints}`);
@@ -203,7 +205,7 @@ async function main() {
       pendingStateFile: statePath,
       lateToleranceMs: 3_600_000,
       persistDebounceMs: 10,
-    } as any);
+    } as any, path.join(tmpDir, "corrupt-outcomes.jsonl"));
     let threw = false;
     try {
       tracker.restorePending();
@@ -228,11 +230,26 @@ async function main() {
       pendingStateFile: statePath,
       lateToleranceMs: 3_600_000,
       persistDebounceMs: 10,
-    } as any);
+    } as any, path.join(tmpDir, "disabled-outcomes.jsonl"));
     tracker.schedule(evt("MINT_OFF"), 1);
     tracker.stop();
     check("nothing scheduled", tracker.stats().pendingCheckpoints === 0);
     check("no state file created", !fs.existsSync(statePath));
+  }
+
+  console.log("\n=== Tests never write to the production outcome log ===\n");
+  {
+    // The guard that stops this suite from poisoning the dataset it exists to
+    // protect. The overdue case above DOES exercise the write path, so without a
+    // log override it files MINT_OVERDUE into logs/outcomes.jsonl and the analysis
+    // reads it back as a real observation.
+    const prodLog = "logs/outcomes.jsonl";
+    const contents = fs.existsSync(prodLog) ? fs.readFileSync(prodLog, "utf8") : "";
+    check(
+      "no fixture mint reached logs/outcomes.jsonl",
+      !contents.includes("MINT_OVERDUE") && !contents.includes("MINT_LEGACY") && !contents.includes("MINT_TRIM"),
+      "a fixture token is present in the production log - the override is not being applied"
+    );
   }
 
   console.log(`\nTotal: ${pass} passed, ${fail} failed`);

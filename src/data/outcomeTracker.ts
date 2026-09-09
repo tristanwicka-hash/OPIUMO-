@@ -142,12 +142,28 @@ export class OutcomeTracker {
   private replayed = 0;
   private stopped = false;
 
-  constructor(connection: Connection, configOverride?: Partial<OutcomeTrackerConfig>) {
+  /**
+   * @param outcomeFileOverride  Where to write outcome records. Tests MUST pass a
+   * temp path. Without it the log path comes from config, which is the real
+   * `logs/outcomes.jsonl` - so a test that exercises the write path would file
+   * fixture tokens into the production dataset and they would later be read back
+   * as though they were real observations. That has already happened once in this
+   * repo (the `sig-test` canary showing up as 19 PASSes in the decision log), and
+   * it is exactly the failure that makes a dataset quietly untrustworthy.
+   */
+  constructor(
+    connection: Connection,
+    configOverride?: Partial<OutcomeTrackerConfig>,
+    outcomeFileOverride?: string
+  ) {
     const appConfig = loadConfig();
     this.connection = connection;
     this.config = { ...appConfig.outcomeTracker, ...configOverride };
     this.logger = new Logger("outcomes", appConfig.logging.level);
-    this.jsonl = new JsonlLog(appConfig.logging.outcomeFile, appConfig.logging.maxLogFileSizeMB);
+    this.jsonl = new JsonlLog(
+      outcomeFileOverride ?? appConfig.logging.outcomeFile,
+      appConfig.logging.maxLogFileSizeMB
+    );
     this.statePath = this.config.pendingStateFile;
 
     this.queue = new WorkQueue<CheckpointJob>({
