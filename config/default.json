@@ -93,6 +93,31 @@
     ],
     "outsideWindow": "idle"
   },
+  "paperExecution": {
+    "_comment": "MEASUREMENT ONLY - records what a position WOULD have done. There is no order path: no wallet, no signing, no transaction building. trading.enabled is irrelevant here because there is nothing to enable. Costs ZERO additional RPC calls: entry uses liquiditySol the metrics path already fetched, and tracking consumes liquidity readings the watchlist already takes. A dedicated poll loop would have cost 720-1,200 calls/h. poolFraction is the share of the pool a paper position represents and drives the slippage model - entry is priced at REALIZABLE PROCEEDS, never the headline value, so a paper fill cannot manufacture profits that could not exist. includeRejected: true opens positions for tokens the LIVE filters rejected as well as passed - that comparison is the whole point, because a 0% pass rate is unreadable until you know what the rejects did. maxOpenPositions is a hard cap and every refusal is RECORDED with its reason rather than applied silently.",
+    "enabled": true,
+    "poolFraction": 0.05,
+    "maxOpenPositions": 50,
+    "includeRejected": true,
+    "trailing": {
+      "hardStopPercent": -50,
+      "activationPercent": 30,
+      "trailPercent": 20,
+      "persistenceObservations": 2,
+      "minHoldMs": 60000
+    },
+    "logFile": "logs/paper-positions.jsonl"
+  },
+  "shadowFilters": {
+    "_comment": "MEASUREMENT ONLY - evaluates looser threshold sets on the SAME already-fetched metrics and records what each would have decided. Changes no behaviour; the live filters still control everything. Costs ZERO additional RPC calls by construction: evaluateFilters takes thresholds as a parameter, so a shadow set is a second call on the same in-memory object, and the module is synchronous so it cannot await a fetch. Any field the live path did not fetch stays null and is recorded as UNCHECKED - it is never fetched to fill the gap. Each set overrides only the named keys of filters; everything else is inherited from the live config, so a shadow set stays honest when the live thresholds change.",
+    "enabled": true,
+    "logFile": "logs/shadow-filters.jsonl",
+    "sets": [
+      { "id": "half-liquidity", "rationale": "half the live liquidity floor - is the floor the binding constraint?", "overrides": { "minLiquiditySol": 2.5 } },
+      { "id": "no-activity-floor", "rationale": "drop the wallet/transaction floors - a token seconds old structurally cannot have them", "overrides": { "minUniqueWallets": 0, "minTransactionCount": 0 } },
+      { "id": "liquidity-only", "rationale": "liquidity alone, everything else off - the loosest defensible set", "overrides": { "minLiquiditySol": 1, "minUniqueWallets": 0, "minTransactionCount": 0, "maxTopHolderPercent": 100, "maxDevWalletPercent": 100 } }
+    ]
+  },
   "logging": {
     "level": "info",
     "logDir": "logs",

@@ -71,6 +71,18 @@ import {
 export interface WatchlistDeps {
   /** Called with any token that passes a full evaluation. The trading engine's own gates still apply. */
   onPass?: (event: NewPoolEvent, result: ReturnType<typeof evaluateFilters>) => Promise<void>;
+  /**
+   * Called with EVERY successful liquidity reading, pass or not.
+   *
+   * This exists so paper positions can be tracked at zero additional RPC cost:
+   * the reading has already been paid for by the check above, and this hands it
+   * on rather than fetching it again. A dedicated paper-position poll loop would
+   * have cost 720-1,200 calls/hour; this costs nothing.
+   *
+   * Synchronous and wrapped by the caller: a consumer that throws must not be
+   * able to break the watchlist's own tick.
+   */
+  onObservation?: (mint: string, liquiditySol: number, atIso: string) => void;
 }
 
 interface Tracked {
@@ -317,6 +329,18 @@ export class Watchlist {
     entry.stage = stage;
     const delay = nextCheckDelayMs(stage, this.policy);
     entry.nextCheckAtMs = Number.isFinite(delay) ? nowMs + delay : Number.POSITIVE_INFINITY;
+
+    // Hand the reading on before logging it. Costs nothing - the call was already
+    // made above - and a consumer that throws must not break the tick, so it is
+    // wrapped. A failed read (sol === null) is NOT passed on: an unreadable pool
+    // is not an observation of zero liquidity.
+    if (sol !== null && this.deps.onObservation) {
+      try {
+        this.deps.onObservation(entry.mint, sol, new Date(nowMs).toISOString());
+      } catch (err: any) {
+        this.logger.warn(`onObservation consumer threw for ${entry.mint}: ${err?.message || err}`);
+      }
+    }
 
     this.log({
       ts: new Date(nowMs).toISOString(),

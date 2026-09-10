@@ -12,6 +12,10 @@ import { DelayProbe } from "./data/delayProbe";
 import { OutcomeTracker } from "./data/outcomeTracker";
 import { Watchlist } from "./watchlist/watchlist";
 import { evaluateSchedule, weeklyOpenHours } from "./schedule/scheduler";
+import { PaperBook, summarise } from "./trading/paperExecution";
+import { constantProductProceeds } from "./trading/trailingStop";
+import { evaluateShadows, ShadowSet } from "./filters/shadowFilters";
+import { JsonlLog } from "./util/logger";
 
 const logger = new Logger("main", loadConfig().logging.level);
 
@@ -105,9 +109,67 @@ async function main() {
   // but only through the same onFilterPass the live path uses, which still
   // refuses everything while trading.enabled is false. It changes *when* a
   // token is offered for a decision, never who decides.
+  /**
+   * Paper execution. RECORDS ONLY - no wallet, no signing, no order path. It is
+   * fed data the live path already fetched, so it costs zero additional RPC
+   * calls. See config paperExecution._comment.
+   */
+  const paperCfg = config.paperExecution;
+  const paperLog = new JsonlLog(paperCfg.logFile, config.logging.maxLogFileSizeMB);
+  const paperBook = new PaperBook(
+    {
+      poolFraction: paperCfg.poolFraction,
+      maxOpenPositions: paperCfg.maxOpenPositions,
+      includeRejected: paperCfg.includeRejected,
+      trailing: paperCfg.trailing,
+    },
+    constantProductProceeds
+  );
+  if (paperCfg.enabled) {
+    logger.warn(
+      `*** PAPER EXECUTION ON (records only) *** ${paperCfg.poolFraction * 100}% of pool per position, ` +
+        `max ${paperCfg.maxOpenPositions} open, includeRejected=${paperCfg.includeRejected}, ` +
+        `entry priced at REALIZABLE PROCEEDS -> ${paperCfg.logFile}. No wallet, no signing, no order path: ` +
+        `trading.enabled is irrelevant because there is nothing to enable. Zero added RPC calls.`
+    );
+  }
+
+  /**
+   * Shadow filters. Evaluated synchronously on the SAME metrics object the live
+   * filters just used, so they add no calls and cannot change any behaviour.
+   */
+  const shadowCfg = config.shadowFilters;
+  const shadowLog = new JsonlLog(shadowCfg.logFile, config.logging.maxLogFileSizeMB);
+  const shadowSets: ShadowSet[] = shadowCfg.sets.map((s) => ({
+    id: s.id,
+    rationale: s.rationale,
+    // Only the named keys are overridden - the rest track the live thresholds.
+    filters: { ...config.filters, ...s.overrides },
+  }));
+  if (shadowCfg.enabled) {
+    logger.warn(
+      `*** SHADOW FILTERS ON (measurement only) *** ${shadowSets.length} set(s): ` +
+        `${shadowSets.map((s) => s.id).join(", ")} -> ${shadowCfg.logFile}. Evaluated on already-fetched ` +
+        `metrics, zero added RPC calls, no effect on any live PASS/SKIP.`
+    );
+  }
+
   const watchlist = new Watchlist(connection, {
     onPass: async (event, result) => {
       if (tradingEngine) await tradingEngine.onFilterPass(event, result);
+    },
+    /**
+     * Every liquidity reading the watchlist already paid for, handed to the
+     * paper book. This is what makes paper tracking free.
+     */
+    onObservation: (mint, liquiditySol, atIso) => {
+      if (!paperCfg.enabled) return;
+      const before = paperBook.openPositions().find((p) => p.mint === mint);
+      if (!before) return;
+      const after = paperBook.observe(mint, { ts: atIso, liquiditySol });
+      if (after && after.outcome !== "open") {
+        paperLog.append({ event: "paper-close", ...after, state: undefined });
+      }
     },
   });
   watchlist.start();
@@ -159,6 +221,40 @@ async function main() {
         queueWaitMs,
       });
       decided++;
+
+      /**
+       * Shadow filters and paper execution, both fed the metrics object the
+       * live filters just used. Neither fetches anything, and both run AFTER
+       * the live decision is recorded so they cannot influence it.
+       */
+      if (shadowCfg.enabled && shadowSets.length > 0) {
+        const shadow = evaluateShadows(event, metrics, result.decision === "PASS" ? "PASS" : "SKIP", shadowSets);
+        shadowLog.append({ event: "shadow-eval", ...shadow });
+      }
+
+      if (paperCfg.enabled) {
+        const { opened, refusal } = paperBook.open({
+          mint: event.mint,
+          at: new Date().toISOString(),
+          liquiditySol: metrics.liquiditySol,
+          liveVerdict: result.decision === "PASS" ? "PASS" : "REJECTED",
+        });
+        if (opened) {
+          paperLog.append({
+            event: "paper-open",
+            mint: opened.mint,
+            openedAt: opened.openedAt,
+            liveVerdict: opened.liveVerdict,
+            entryLiquiditySol: opened.entryLiquiditySol,
+            entryProceedsSol: opened.entryProceedsSol,
+            poolFraction: opened.poolFraction,
+            openNow: paperBook.openCount,
+          });
+        } else if (refusal) {
+          // Recorded, never silent - a cap applied quietly would bias the sample.
+          paperLog.append({ event: "paper-refused", mint: refusal.mint, reason: refusal.reason });
+        }
+      }
 
       // Baseline is the liquidity the DECISION was made on, so a later multiple
       // means "grew this much since we looked", not "since some other moment".
@@ -249,7 +345,20 @@ async function main() {
           `delay-probe: ${p.completed}/${p.scheduled} observations done, ${p.pendingTimers} pending, ` +
             `${p.droppedObservations} dropped, ${p.skippedBySampling} tokens not sampled`
         );
-        delayProbe.recordStats(detected);
+        if (paperCfg.enabled) {
+      const ps = summarise(paperBook);
+      logger.info(
+        `Paper book: ${ps.opened} opened (${ps.open} still open), ${ps.closed} closed, ` +
+          `${ps.exitFailed} exit-failed, ${ps.abandoned} abandoned, ${ps.refused} refused ` +
+          `(${ps.refusedByCap} by the ${paperCfg.maxOpenPositions}-position cap). ` +
+          `Realised ${ps.realisedPnlSol.toFixed(4)} SOL. ` +
+          `By live verdict - PASS: ${ps.byVerdict.PASS.closed} closed / ${ps.byVerdict.PASS.realisedPnlSol.toFixed(4)} SOL, ` +
+          `REJECTED: ${ps.byVerdict.REJECTED.closed} closed / ${ps.byVerdict.REJECTED.realisedPnlSol.toFixed(4)} SOL.`
+      );
+      paperLog.append({ event: "paper-summary", ...ps });
+    }
+
+    delayProbe.recordStats(detected);
       }
     }
     if (config.watchlist.enabled) {

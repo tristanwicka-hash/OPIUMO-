@@ -213,6 +213,34 @@ export interface OutcomeTrackerConfig {
   lateToleranceMs: number;
 }
 
+export interface PaperExecutionConfig {
+  enabled: boolean;
+  poolFraction: number;
+  maxOpenPositions: number;
+  includeRejected: boolean;
+  trailing: {
+    hardStopPercent: number;
+    activationPercent: number;
+    trailPercent: number;
+    persistenceObservations: number;
+    minHoldMs: number;
+  };
+  logFile: string;
+}
+
+export interface ShadowFilterSetConfig {
+  id: string;
+  rationale: string;
+  /** Only the named keys are overridden; the rest are inherited from the live filters. */
+  overrides: Partial<FiltersConfig>;
+}
+
+export interface ShadowFiltersConfig {
+  enabled: boolean;
+  logFile: string;
+  sets: ShadowFilterSetConfig[];
+}
+
 export interface LoggingConfig {
   level: "minimal" | "info" | "debug";
   logDir: string;
@@ -285,6 +313,8 @@ export interface AppConfig {
   watchlist: WatchlistConfig;
   logging: LoggingConfig;
   schedule: ScheduleConfig;
+  paperExecution: PaperExecutionConfig;
+  shadowFilters: ShadowFiltersConfig;
   perps: PerpsConfig;
   fundingArb: FundingArbConfig;
   rpcUrl: string;
