@@ -85,6 +85,8 @@ const suites = [
   { name: "RPC burn-rate meter (offline)", script: "tests/test-rpc-meter.ts" },
   { name: "Active-window scheduler (offline)", script: "tests/test-scheduler.ts" },
   { name: "Hourly detection histogram (offline)", script: "tests/test-hourly-histogram.ts" },
+  { name: "Trailing stop decision (offline)", script: "tests/test-trailing-stop.ts" },
+  { name: "Trailing stop backtest (offline)", script: "tests/test-trailing-backtest.ts" },
   { name: "Run-summary arithmetic (offline)", script: "tests/test-summary.ts" },
 ];
 
