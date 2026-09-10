@@ -216,6 +216,13 @@ export interface LoggingConfig {
   outcomeFile: string;
   watchlistFile: string;
   maxLogFileSizeMB: number;
+  /**
+   * RPC burn-rate meter. Both optional: they default in src/rpc/rpcMeter.ts, so
+   * config/default.json needs no edit to turn the meter on. Set them here to
+   * override. See rpcMeter.ts for why the defaults live in source for now.
+   */
+  rpcMeterFile?: string;
+  rpcMeterIntervalMs?: number;
 }
 
 export interface PerpsConfig {
