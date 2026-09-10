@@ -19,11 +19,42 @@
  * reason, and is NOT counted as a failure. Anything else non-zero is a failure,
  * so an unexpected outcome still defaults to "failed".
  */
-import { spawnSync } from "child_process";
+import { spawn } from "child_process";
 import fs from "fs";
 import os from "os";
 import path from "path";
 import { EXIT_PASS, EXIT_SKIP, SKIP_REPORT_ENV } from "./exit-codes";
+import { parseTotals, aggregate, formatSummary, SuiteRecord, SuiteTotals } from "./summary";
+
+/**
+ * Runs one suite, streaming its output live AND capturing it.
+ *
+ * The runner needs the captured text to read each suite's `Total:` line for the
+ * final summary, but streaming must not be given up to get it - a live-network
+ * suite can sit for a timeout, and a runner that shows nothing while that
+ * happens looks hung. So each chunk is written straight through and kept.
+ */
+function runSuite(
+  script: string,
+  env: NodeJS.ProcessEnv
+): Promise<{ status: number | null; output: string }> {
+  return new Promise((resolve) => {
+    const child = spawn("npx", ["ts-node", script], {
+      stdio: ["inherit", "pipe", "pipe"],
+      env,
+    });
+    let output = "";
+    child.stdout.on("data", (c: Buffer) => {
+      process.stdout.write(c);
+      output += c.toString();
+    });
+    child.stderr.on("data", (c: Buffer) => {
+      process.stderr.write(c);
+      output += c.toString();
+    });
+    child.on("close", (status) => resolve({ status, output }));
+  });
+}
 
 const suites = [
   { name: "RPC connection (Part 1)", script: "tests/test-rpc-connection.ts", needsNetwork: true },
@@ -51,6 +82,7 @@ const suites = [
   { name: "Outcome tracker state (offline)", script: "tests/test-outcome-tracker.ts" },
   { name: "Watchlist policy (offline)", script: "tests/test-watchlist-policy.ts" },
   { name: "Watchlist runtime (offline)", script: "tests/test-watchlist-runtime.ts" },
+  { name: "Run-summary arithmetic (offline)", script: "tests/test-summary.ts" },
 ];
 
 /**
@@ -69,6 +101,8 @@ interface SuiteResult {
   /** Only set for a skip: the precondition the suite reported as missing. */
   reason?: string;
   needsNetwork: boolean;
+  /** Assertion counts scraped from this suite's own `Total:` line, if it prints one. */
+  totals: SuiteTotals;
 }
 
 const results: SuiteResult[] = [];
@@ -77,91 +111,109 @@ const skipReportFile = path.join(
   "skip-reason.txt"
 );
 
-for (const suite of suites) {
+async function main() {
+  for (const suite of suites) {
+    console.log(`\n${"=".repeat(70)}`);
+    console.log(`Running: ${suite.name}`);
+    console.log("=".repeat(70));
+
+    // Cleared before every suite so a stale reason can never be attributed to
+    // the wrong suite.
+    if (fs.existsSync(skipReportFile)) fs.unlinkSync(skipReportFile);
+
+    const { status, output } = await runSuite(suite.script, {
+      ...process.env,
+      [SKIP_REPORT_ENV]: skipReportFile,
+    });
+
+    let outcome: Outcome;
+    let reason: string | undefined;
+
+    if (status === EXIT_PASS) {
+      outcome = "pass";
+    } else if (status === EXIT_SKIP) {
+      outcome = "skip";
+      reason = fs.existsSync(skipReportFile)
+        ? fs.readFileSync(skipReportFile, "utf-8").trim()
+        : "(the suite exited 2 but recorded no reason - see its output above)";
+      console.log(`\n>>> ${suite.name} SKIPPED: ${reason}`);
+    } else {
+      // Includes crashes, signals (status null), and any code this runner does
+      // not recognise. Unknown outcomes fail; they are never assumed to be skips.
+      outcome = "fail";
+      console.error(`\n>>> ${suite.name} FAILED (exit status ${status})`);
+    }
+
+    results.push({
+      name: suite.name,
+      outcome,
+      status,
+      reason,
+      needsNetwork: !!suite.needsNetwork,
+      totals: parseTotals(output),
+    });
+  }
+
+  const passed = results.filter((r) => r.outcome === "pass");
+  const failed = results.filter((r) => r.outcome === "fail");
+  const skipped = results.filter((r) => r.outcome === "skip");
+
   console.log(`\n${"=".repeat(70)}`);
-  console.log(`Running: ${suite.name}`);
+  console.log(
+    `Suites: ${results.length} run - ${passed.length} passed, ${failed.length} failed, ${skipped.length} skipped`
+  );
+
+  if (skipped.length > 0) {
+    console.log("\nSkipped (a precondition was absent - NOT counted as failures):");
+    for (const r of skipped) console.log(`  - ${r.name}: ${r.reason}`);
+  }
+
+  if (failed.length > 0) {
+    console.error("\nFailed:");
+    for (const r of failed) console.error(`  - ${r.name} (exit status ${r.status})`);
+
+    const networkFailures = failed.filter((r) => r.needsNetwork);
+    if (networkFailures.length > 0) {
+      // Deliberately NOT phrased as "these failed because of the network". The
+      // exit code cannot tell a blocked host from a real bug, and a mutation test
+      // proved the point: a deliberate regression in Perps Drift was correctly
+      // reported as FAIL, then filed under this heading as if the sandbox
+      // explained it. So the caveat states what is actually known - that these
+      // suites need egress - and explicitly refuses to conclude anything else.
+      console.error(
+        "\nOf those, these suites need live network access to Solana/Jupiter/Drift, so a " +
+          "failure is expected in a sandbox with no egress:"
+      );
+      for (const r of networkFailures) console.error(`  - ${r.name}`);
+      console.error(
+        "  That is NOT proof the network caused it - a real bug in one of these looks " +
+          "identical from the exit code. Read each suite's output above before dismissing it."
+      );
+    }
+    const otherFailures = failed.filter((r) => !r.needsNetwork);
+    if (otherFailures.length > 0) {
+      console.error(
+        `\n${otherFailures.length} failure(s) are NOT network-related and are real: ` +
+          otherFailures.map((r) => r.name).join(", ")
+      );
+    }
+  } else if (skipped.length > 0) {
+    console.log("\nNo failures. Every suite that ran, passed.");
+  } else {
+    console.log("\nAll suites passed.");
+  }
+  console.log(`(Suites needing network: ${NETWORK_SUITES.join(", ")})`);
+
+  // The last line of the run, and the only one starting with SUMMARY. Reading
+  // the final `Total:` instead of this is what produced two wrong repo counts.
+  const agg = aggregate(results as SuiteRecord[]);
+  console.log(formatSummary("OPIUMO", agg));
   console.log("=".repeat(70));
 
-  // Cleared before every suite so a stale reason can never be attributed to
-  // the wrong suite.
-  if (fs.existsSync(skipReportFile)) fs.unlinkSync(skipReportFile);
-
-  const result = spawnSync("npx", ["ts-node", suite.script], {
-    stdio: "inherit",
-    env: { ...process.env, [SKIP_REPORT_ENV]: skipReportFile },
-  });
-
-  const status = result.status;
-  let outcome: Outcome;
-  let reason: string | undefined;
-
-  if (status === EXIT_PASS) {
-    outcome = "pass";
-  } else if (status === EXIT_SKIP) {
-    outcome = "skip";
-    reason = fs.existsSync(skipReportFile)
-      ? fs.readFileSync(skipReportFile, "utf-8").trim()
-      : "(the suite exited 2 but recorded no reason - see its output above)";
-    console.log(`\n>>> ${suite.name} SKIPPED: ${reason}`);
-  } else {
-    // Includes crashes, signals (status null), and any code this runner does
-    // not recognise. Unknown outcomes fail; they are never assumed to be skips.
-    outcome = "fail";
-    console.error(`\n>>> ${suite.name} FAILED (exit status ${status})`);
-  }
-
-  results.push({ name: suite.name, outcome, status, reason, needsNetwork: !!suite.needsNetwork });
+  process.exit(failed.length > 0 ? 1 : 0);
 }
 
-const passed = results.filter((r) => r.outcome === "pass");
-const failed = results.filter((r) => r.outcome === "fail");
-const skipped = results.filter((r) => r.outcome === "skip");
-
-console.log(`\n${"=".repeat(70)}`);
-console.log(
-  `Suites: ${results.length} run - ${passed.length} passed, ${failed.length} failed, ${skipped.length} skipped`
-);
-
-if (skipped.length > 0) {
-  console.log("\nSkipped (a precondition was absent - NOT counted as failures):");
-  for (const r of skipped) console.log(`  - ${r.name}: ${r.reason}`);
-}
-
-if (failed.length > 0) {
-  console.error("\nFailed:");
-  for (const r of failed) console.error(`  - ${r.name} (exit status ${r.status})`);
-
-  const networkFailures = failed.filter((r) => r.needsNetwork);
-  if (networkFailures.length > 0) {
-    // Deliberately NOT phrased as "these failed because of the network". The
-    // exit code cannot tell a blocked host from a real bug, and a mutation test
-    // proved the point: a deliberate regression in Perps Drift was correctly
-    // reported as FAIL, then filed under this heading as if the sandbox
-    // explained it. So the caveat states what is actually known - that these
-    // suites need egress - and explicitly refuses to conclude anything else.
-    console.error(
-      "\nOf those, these suites need live network access to Solana/Jupiter/Drift, so a " +
-        "failure is expected in a sandbox with no egress:"
-    );
-    for (const r of networkFailures) console.error(`  - ${r.name}`);
-    console.error(
-      "  That is NOT proof the network caused it - a real bug in one of these looks " +
-        "identical from the exit code. Read each suite's output above before dismissing it."
-    );
-  }
-  const otherFailures = failed.filter((r) => !r.needsNetwork);
-  if (otherFailures.length > 0) {
-    console.error(
-      `\n${otherFailures.length} failure(s) are NOT network-related and are real: ` +
-        otherFailures.map((r) => r.name).join(", ")
-    );
-  }
-} else if (skipped.length > 0) {
-  console.log("\nNo failures. Every suite that ran, passed.");
-} else {
-  console.log("\nAll suites passed.");
-}
-console.log(`(Suites needing network: ${NETWORK_SUITES.join(", ")})`);
-console.log("=".repeat(70));
-
-process.exit(failed.length > 0 ? 1 : 0);
+main().catch((err) => {
+  console.error("test runner crashed:", err);
+  process.exit(1);
+});

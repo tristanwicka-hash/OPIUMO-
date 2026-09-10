@@ -41,7 +41,8 @@
     "test:watchlist": "ts-node tests/test-watchlist-policy.ts",
     "test:watchlist-runtime": "ts-node tests/test-watchlist-runtime.ts",
     "test:priority-fee": "ts-node tests/test-priority-fee.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:summary": "ts-node tests/test-summary.ts"
   },
   "dependencies": {
     "@drift-labs/sdk": "^2.156.0",
