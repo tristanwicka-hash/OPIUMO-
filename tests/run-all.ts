@@ -87,6 +87,7 @@ const suites = [
   { name: "Hourly detection histogram (offline)", script: "tests/test-hourly-histogram.ts" },
   { name: "Trailing stop decision (offline)", script: "tests/test-trailing-stop.ts" },
   { name: "Trailing stop backtest (offline)", script: "tests/test-trailing-backtest.ts" },
+  { name: "Schedule savings analysis (offline)", script: "tests/test-schedule-savings.ts" },
   { name: "Run-summary arithmetic (offline)", script: "tests/test-summary.ts" },
 ];
 

@@ -49,7 +49,9 @@
     "test:histogram": "ts-node tests/test-hourly-histogram.ts",
     "backtest:trailing": "ts-node scripts/backtest-trailing.ts",
     "test:trailing": "ts-node tests/test-trailing-stop.ts",
-    "test:trailing-backtest": "ts-node tests/test-trailing-backtest.ts"
+    "test:trailing-backtest": "ts-node tests/test-trailing-backtest.ts",
+    "schedule:savings": "ts-node scripts/schedule-savings.ts",
+    "test:savings": "ts-node tests/test-schedule-savings.ts"
   },
   "dependencies": {
     "@drift-labs/sdk": "^2.156.0",
