@@ -24,6 +24,7 @@
  * Run with: npm run test:paper-trading
  */
 import { Connection, Keypair } from "@solana/web3.js";
+import { assertNoProductionWrites } from "./no-production-writes";
 import { SpotTradingEngine } from "../src/trading/engine";
 import { PriceHistoryStore } from "../src/trading/priceHistory";
 import { PositionStore, SpotPosition } from "../src/trading/positionStore";
@@ -171,6 +172,13 @@ async function main() {
 
   const fs = require("fs");
   fs.rmSync(testDir, { recursive: true, force: true });
+
+  // RULE, not a per-file check: scans EVERY production log in logs/, so a
+
+  // log added later is covered without anyone remembering to add an assertion.
+
+  assertNoProductionWrites(check, ["Mint111111111111111111111111111111111111111"]);
+
 
   console.log(`\nTotal: ${pass} passed, ${fail} failed`);
   process.exit(fail > 0 ? 1 : 0);

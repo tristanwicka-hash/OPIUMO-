@@ -38,10 +38,17 @@ export class DecisionLog {
   private logger: Logger;
   private jsonl: JsonlLog;
 
-  constructor() {
+  /**
+   * `logFileOverride` exists so a test can write somewhere other than the
+   * production decision log. It had no override at all, so tests/test-filters.ts
+   * could only write to logs/decisions.jsonl - which it did, 78 fixture records
+   * across the live and rotated files. Same shape as Watchlist and SpotTradeLog,
+   * which both already took one. The bot passes nothing and is unaffected.
+   */
+  constructor(logFileOverride?: string) {
     const config = loadConfig();
     this.logger = new Logger("filters", config.logging.level);
-    this.jsonl = new JsonlLog(config.logging.decisionsFile, config.logging.maxLogFileSizeMB);
+    this.jsonl = new JsonlLog(logFileOverride ?? config.logging.decisionsFile, config.logging.maxLogFileSizeMB);
   }
 
   /**

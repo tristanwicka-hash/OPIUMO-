@@ -15,6 +15,7 @@
  * Run with: npm run test:trading-engine-gating
  */
 import fs from "fs";
+import { assertNoProductionWrites } from "./no-production-writes";
 import { Connection, Keypair } from "@solana/web3.js";
 import { SpotTradingEngine } from "../src/trading/engine";
 import { PriceHistoryStore } from "../src/trading/priceHistory";
@@ -55,7 +56,11 @@ async function main() {
   fs.rmSync(testDir, { recursive: true, force: true });
   const priceHistory = new PriceHistoryStore(`${testDir}/prices.json`);
   const positions = new PositionStore(`${testDir}/positions.json`);
-  const tradeLog = new SpotTradeLog(); // writes to the real trades.jsonl, cleaned up like other tests
+  // Routed into testDir like priceHistory and positions above. This previously
+  // defaulted to the REAL logs/trades.jsonl and the comment claimed it was
+  // cleaned up; it was not. 39 rejected-buy records with the fixture mint
+  // accumulated in the production trade log between 2026-09-08 and 09-10.
+  const tradeLog = new SpotTradeLog(`${testDir}/trades.jsonl`, false);
 
   // Never actually used - every case here is refused before either would be touched.
   const fakeConnection = {} as Connection;
@@ -77,6 +82,13 @@ async function main() {
   }
 
   fs.rmSync(testDir, { recursive: true, force: true });
+
+  // RULE, not a per-file check: scans EVERY production log in logs/, so a
+
+  // log added later is covered without anyone remembering to add an assertion.
+
+  assertNoProductionWrites(check, ["Mint111111111111111111111111111111111111111"]);
+
 
   console.log(`\nTotal: ${pass} passed, ${fail} failed`);
   process.exit(fail > 0 ? 1 : 0);

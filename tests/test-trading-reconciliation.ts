@@ -13,6 +13,7 @@
  * Run with: npm run test:trading-reconciliation
  */
 import { Connection, Keypair } from "@solana/web3.js";
+import { assertNoProductionWrites } from "./no-production-writes";
 import { SpotTradingEngine } from "../src/trading/engine";
 import { PriceHistoryStore } from "../src/trading/priceHistory";
 import { PositionStore, SpotPosition } from "../src/trading/positionStore";
@@ -65,7 +66,9 @@ async function main() {
   function freshEngine(connection: Connection) {
     const priceHistory = new PriceHistoryStore(`${testDir}/prices.json`);
     const positions = new PositionStore(`${testDir}/positions.json`);
-    const tradeLog = new SpotTradeLog();
+    // Routed into testDir. This previously defaulted to the REAL
+    // logs/trades.jsonl and wrote 117 reconciliation-mismatch records there.
+    const tradeLog = new SpotTradeLog(`${testDir}/trades.jsonl`, false);
     const engine = new SpotTradingEngine(connection, Keypair.generate(), priceHistory, positions, tradeLog);
     return { engine, positions };
   }
@@ -129,6 +132,13 @@ async function main() {
 
   const fs = require("fs");
   fs.rmSync(testDir, { recursive: true, force: true });
+
+  // RULE, not a per-file check: scans EVERY production log in logs/, so a
+
+  // log added later is covered without anyone remembering to add an assertion.
+
+  assertNoProductionWrites(check, ["Mint111111111111111111111111111111111111111"]);
+
 
   console.log(`\nTotal: ${pass} passed, ${fail} failed`);
   process.exit(fail > 0 ? 1 : 0);

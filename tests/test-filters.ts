@@ -12,6 +12,7 @@
  * trading.enabled.
  */
 import fs from "fs";
+import { assertNoProductionWrites } from "./no-production-writes";
 import { evaluateFilters, formatDecisionLine } from "../src/filters/engine";
 import { DecisionLog } from "../src/filters/decisionLog";
 import { loadConfig } from "../src/config";
@@ -225,22 +226,33 @@ async function main() {
 
   console.log(`\nOffline checks: ${pass} passed, ${fail} failed`);
 
-  console.log("\n-- decision log (console + logs/decisions.jsonl) --");
+  console.log("\n-- decision log (console + its own jsonl file) --");
   {
-    const config = loadConfig();
-    const before = fs.existsSync(config.logging.decisionsFile)
-      ? fs.readFileSync(config.logging.decisionsFile, "utf-8").split("\n").filter(Boolean).length
-      : 0;
+    // Writes to a TEST file, not logs/decisions.jsonl. Previously DecisionLog
+    // took no path argument, so this block appended fixture PASS/SKIP records
+    // straight into the production decision log - 78 of them across the live
+    // and rotated files before it was caught on 2026-09-10.
+    const logDir = "logs/test-filters";
+    fs.rmSync(logDir, { recursive: true, force: true });
+    const testLogFile = `${logDir}/decisions.jsonl`;
+    const before = 0;
 
-    const log = new DecisionLog();
+    const log = new DecisionLog(testLogFile);
     log.record(evaluateFilters(event, goodMetrics(), filters));
     log.record(evaluateFilters(event, goodMetrics({ liquiditySol: 0 }), filters));
 
     const all = log.readAll();
-    check("decisions.jsonl grew by 2 records", all.length === before + 2);
+    check("the test decision log grew by 2 records", all.length === before + 2);
     const last = all[all.length - 1] as any;
     check("last record is the SKIP with reasons persisted", last.decision === "SKIP" && Array.isArray(last.reasons) && last.reasons.length > 0);
   }
+
+  // RULE, not a per-file check: scans EVERY production log in logs/, so a
+
+  // log added later is covered without anyone remembering to add an assertion.
+
+  assertNoProductionWrites(check, ["MintAddress1111111111111111111111111111111", "sig-test"]);
+
 
   console.log(`\nTotal: ${pass} passed, ${fail} failed`);
   process.exit(fail > 0 ? 1 : 0);
