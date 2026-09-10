@@ -144,15 +144,23 @@ export async function collectHolderData(
   const threshold = params.dasAgeThresholdMs ?? DEFAULT_DAS_AGE_THRESHOLD_MS;
   const allowDas = params.allowDas !== false;
 
-  if (params.tokenAgeMs < threshold) {
-    if (!allowDas) {
-      return {
-        topHolderPercent: null, devWalletPercent: null, source: "none", creditsSpent: 0,
-        error: `token is ${Math.round(params.tokenAgeMs / 1000)}s old, below the ${Math.round(threshold / 1000)}s index threshold, and DAS is disabled - reported unchecked rather than guessed`,
-      };
-    }
+  // Young AND allowed to pay: DAS is the only thing that works this early.
+  if (params.tokenAgeMs < threshold && allowDas) {
     return fetchHolderDataViaDas(connection, params.mint, params.supplyRaw, params.creator, params.excludeAddresses);
   }
+
+  /**
+   * Otherwise fall through to the 1-credit path - INCLUDING when the token is
+   * young and DAS is off.
+   *
+   * Giving up without trying was a real bug, found on the first live run of
+   * option (d): the watchlist re-evaluates at a median of 66s, below the 120s
+   * threshold, so every re-evaluation returned "none" at 0 credits and produced
+   * no data at all. The threshold is a guess about when the index appears; the
+   * call itself is the actual test, and it costs 1 credit to ask. If the index
+   * is not there yet it fails, which is reported as unchecked - no worse than
+   * not asking, and it succeeds whenever the index has arrived.
+   */
 
   // Old enough that the index should exist. Try the 1-credit path.
   try {

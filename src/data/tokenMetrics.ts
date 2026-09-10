@@ -45,6 +45,18 @@ export interface TokenMetrics {
   riskyTokenExtensions: string[] | null;
 
   /**
+   * How the holder metrics were obtained, and what they cost.
+   *
+   * "skipped-cheap-fail" means the token already failed a cheaper check and no
+   * holder call was made at all - the nulls above are unpaid-for, not failures.
+   * "largest-accounts" is the 1-credit path, available once the token is old
+   * enough for the index to exist. "das" is the 10-credit path. Recorded so a
+   * reader can tell an unaffordable metric from an unavailable one.
+   */
+  holderSource?: string;
+  holderCreditsSpent?: number;
+
+  /**
    * % of the Raydium LP token supply the pool creator personally holds (i.e. NOT locked/burned -
    * withdrawable by them at will). Only meaningful for Raydium pools - a Pump.fun bonding curve
    * has no separate LP token, and the program's own logic makes the liquidity structurally
@@ -557,6 +569,8 @@ export async function collectTokenMetrics(
     mintAuthorityRenounced,
     freezeAuthorityRenounced,
     riskyTokenExtensions,
+    holderSource,
+    holderCreditsSpent: holderCredits,
     creatorLpPercent,
     lpCheckApplicable,
     uniqueWallets,

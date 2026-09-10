@@ -108,17 +108,34 @@ check("falls back to DAS", fr.source === "das");
 check("and reports the WASTED credit too - 1 + 10", fr.creditsSpent === 11, `got ${fr.creditsSpent}`);
 check("the metric is still produced", fr.topHolderPercent === 25);
 
-section("allowDas=false costs NOTHING and reports unchecked");
+section("allowDas=false means NEVER PAY 10x - not never look");
 
-const off = stubConnection({});
-const offr = await collectHolderData(off.conn, {
+// CORRECTED after the first live run of option (d). The original behaviour was
+// to give up without calling anything when a token was young and DAS was off.
+// That produced source "none" at 0 credits on every watchlist re-evaluation -
+// which promotes at a median of 66s, below the 120s threshold - so the option
+// (d) path returned no data at all. The threshold is a GUESS about when the
+// index appears; the 1-credit call is the actual test.
+const offc = stubConnection({});
+const offr = await collectHolderData(offc.conn, {
   mint: MINT, supplyRaw: SUPPLY, creator: CREATOR, excludeAddresses: new Set(),
   tokenAgeMs: 1000, allowDas: false,
 });
-check("no call at all is made", off.calls.length === 0);
-check("zero credits spent", offr.creditsSpent === 0);
-check("metrics are NULL, not zero", offr.topHolderPercent === null && offr.devWalletPercent === null);
-check("and the reason says it was not guessed", (offr.error ?? "").includes("unchecked"));
+check("a YOUNG token with DAS off still TRIES the 1-credit call", offc.calls.includes("largest"));
+check("and never touches DAS", !offc.calls.some((c) => c.startsWith("das")));
+check("source is the cheap path", offr.source === "largest-accounts", offr.source);
+check("costing 2 credits, never 10", offr.creditsSpent === 2);
+
+// When the index genuinely is not there, it fails - and that is reported, not guessed.
+const offFail = stubConnection({ largestThrows: true });
+const offFailR = await collectHolderData(offFail.conn, {
+  mint: MINT, supplyRaw: SUPPLY, creator: CREATOR, excludeAddresses: new Set(),
+  tokenAgeMs: 1000, allowDas: false,
+});
+check("if the index is absent, metrics are NULL not zero", offFailR.topHolderPercent === null);
+check("no DAS fallback is taken when it is forbidden", !offFail.calls.some((c) => c.startsWith("das")));
+check("it cost only the 1 credit it tried", offFailR.creditsSpent === 1);
+check("and the reason names the disabled fallback", (offFailR.error ?? "").includes("DAS is disabled"));
 
 section("a DAS error reports the credit as spent - the call still cost money");
 
@@ -156,6 +173,44 @@ check(
   evaluateStage1Reasons(cheapPass, filters).length > 0
 );
 
+section("OPTION (d): holder data resolves LATE and CHEAP, via the watchlist");
+
+const fsW = require("fs") as typeof import("fs");
+  const pathW = require("path") as typeof import("path");
+  const wl = fsW.readFileSync(pathW.resolve(process.cwd(), "src/watchlist/watchlist.ts"), "utf-8");
+check("the full re-evaluation records a holder-resolved event", wl.includes('event: "holder-resolved"'));
+check("it carries topHolderPercent", wl.includes("topHolderPercent: metrics.topHolderPercent"));
+check("and devWalletPercent", wl.includes("devWalletPercent: metrics.devWalletPercent"));
+check("and which path paid for it", wl.includes("holderSource: metrics.holderSource"));
+check("and what it cost", wl.includes("holderCreditsSpent: metrics.holderCreditsSpent"));
+check("and how long after detection it arrived", wl.includes("resolvedAfterMs"));
+
+// The load-bearing property: recorded on SKIP too, not only on PASS.
+const recIdx = wl.indexOf('event: "holder-resolved"');
+const passIdx = wl.indexOf('if (result.decision === "PASS")');
+check(
+  "it is recorded BEFORE the PASS branch, so a SKIP is recorded too",
+  recIdx !== -1 && passIdx !== -1 && recIdx < passIdx,
+  `record at ${recIdx}, PASS branch at ${passIdx}`
+);
+check(
+  "the decision is recorded alongside, so PASS and SKIP can be told apart",
+  wl.includes("decision: result.decision")
+);
+
+// And the routing must actually make it cheap by then.
+const lateAge = 10 * 60 * 1000;
+const lateConn = stubConnection({});
+const late = await collectHolderData(lateConn.conn, {
+  mint: MINT, supplyRaw: SUPPLY, creator: CREATOR, excludeAddresses: new Set(), tokenAgeMs: lateAge,
+});
+check("a token 10 minutes old uses the 1-credit path", late.source === "largest-accounts");
+check("costing 2 credits, not 10", late.creditsSpent === 2);
+check("no DAS call is made", !lateConn.calls.some((c) => c.startsWith("das")));
+check(
+  "which is the entire point of option (d): the same data, an order of magnitude cheaper",
+  late.creditsSpent < 10
+);
 }
 main().then(() => {
 section("THE EXPENSIVE CALL IS ACTUALLY LAST - structural, in the collector");

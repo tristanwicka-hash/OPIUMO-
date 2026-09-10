@@ -385,6 +385,36 @@ export class Watchlist {
       });
       const result = evaluateFilters(event, metrics, loadConfig().filters);
 
+      /**
+       * OPTION (d) FROM APPROVALS 16: holder data arrives HERE, late and cheap.
+       *
+       * At detection the largest-accounts index does not exist yet, so the
+       * 1-credit call fails and the only way to get holder concentration is a
+       * 10-credit DAS call - measured at 2,790 credits/h, over budget. By the
+       * time the watchlist re-evaluates, the token is minutes old, the index
+       * exists, and the SAME data costs 1 credit.
+       *
+       * Recorded even when the token SKIPs. The whole point is answering what
+       * the rejected tokens actually looked like, and a metric computed and
+       * thrown away answers nothing. Before this, a non-PASS full check
+       * discarded the holder numbers it had just paid for.
+       */
+      const detectedAtMs = Date.parse(event.detectedAt);
+      this.log({
+        ts: new Date(nowMs).toISOString(),
+        event: "holder-resolved",
+        mint: entry.mint,
+        stage: entry.stage,
+        liquiditySol: metrics.liquiditySol,
+        topHolderPercent: metrics.topHolderPercent,
+        devWalletPercent: metrics.devWalletPercent,
+        holderSource: metrics.holderSource ?? null,
+        holderCreditsSpent: metrics.holderCreditsSpent ?? null,
+        // How long after detection this arrived - the cost of waiting, in seconds.
+        resolvedAfterMs: Number.isNaN(detectedAtMs) ? null : nowMs - detectedAtMs,
+        decision: result.decision,
+      } as unknown as WatchlistRecord);
+
       if (result.decision === "PASS") {
         this.passes++;
         this.log({
