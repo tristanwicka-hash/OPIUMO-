@@ -12,6 +12,7 @@ import {
   parseRpcMethods,
   perHour,
   formatMeterLine,
+  formatStatusPart,
   MIN_UPTIME_FOR_RATE_MS,
 } from "../src/rpc/rpcMeter";
 
@@ -154,6 +155,61 @@ check("names the busiest method", line.includes("getAccountInfo"));
 check(
   "says 'not enough uptime yet' rather than printing a made-up rate",
   formatMeterLine(tooSoon).includes("not enough uptime yet")
+);
+
+section("HTTP STATUS CAPTURE: 'not watched' and 'no errors' are different facts");
+
+const noCapture = new RpcMeter(T0);
+noCapture.record(body("getSlot"));
+const ncSnap = noCapture.snapshot(T0 + HOUR);
+check("capture is off by default", ncSnap.statusCaptureOn === false);
+check("no statuses recorded", Object.keys(ncSnap.statusCounts).length === 0);
+check("rateLimited is 0", ncSnap.rateLimited === 0);
+check(
+  "the line says NOT WATCHED rather than implying a clean run",
+  formatStatusPart(ncSnap).includes("not watched")
+);
+check(
+  "and does not claim zero rate-limited responses",
+  !formatStatusPart(ncSnap).includes("0 RATE-LIMITED")
+);
+
+const cap = new RpcMeter(T0);
+cap.enableStatusCapture();
+cap.record(body("getSlot"));
+check("capture reports as on once enabled", cap.snapshot(T0 + HOUR).statusCaptureOn === true);
+
+check("a 200 is not a rate limit", cap.recordStatus(200, T0 + 1000) === false);
+check("the FIRST 429 returns true, so it can be logged immediately", cap.recordStatus(429, T0 + 2000) === true);
+check("a SECOND 429 returns false - only the first is shouted about", cap.recordStatus(429, T0 + 3000) === false);
+cap.recordStatus(500, T0 + 4000);
+
+const cs = cap.snapshot(T0 + HOUR);
+check("429s are counted", cs.rateLimited === 2, `got ${cs.rateLimited}`);
+check("the first 429 time is recorded", cs.firstRateLimitedAt === new Date(T0 + 2000).toISOString());
+check("the last 429 time is recorded separately", cs.lastRateLimitedAt === new Date(T0 + 3000).toISOString());
+check("every status code is tallied, not just 429", cs.statusCounts["200"] === 1 && cs.statusCounts["500"] === 1);
+check("429 appears in the tally too", cs.statusCounts["429"] === 2);
+check(
+  "the line shouts about rate limiting when it happened",
+  formatStatusPart(cs).includes("RATE-LIMITED")
+);
+check("and names when it started", formatStatusPart(cs).includes(cs.firstRateLimitedAt as string));
+
+const clean = new RpcMeter(T0);
+clean.enableStatusCapture();
+clean.recordStatus(200, T0 + 1000);
+check(
+  "a watched run with no 429s says so WITHOUT the alarm",
+  !formatStatusPart(clean.snapshot(T0 + HOUR)).includes("RATE-LIMITED")
+);
+check(
+  "and is distinguishable from an unwatched run",
+  formatStatusPart(clean.snapshot(T0 + HOUR)) !== formatStatusPart(ncSnap)
+);
+check(
+  "status capture does not disturb the call counters",
+  cap.snapshot(T0 + HOUR).rpcCalls === 1
 );
 
 console.log(`\nTotal: ${pass} passed, ${fail} failed`);

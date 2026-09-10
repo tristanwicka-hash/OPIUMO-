@@ -74,6 +74,21 @@ export interface MeterSnapshot {
   methods: MethodShare[];
   /** Bodies that could not be parsed into JSON-RPC calls. Counted, never guessed at. */
   unparsedBodies: number;
+
+  /**
+   * HTTP status codes seen, by code. EMPTY unless status capture is enabled -
+   * an empty map means "not being watched", not "no errors", and the report
+   * says which.
+   */
+  statusCounts: Record<string, number>;
+  /** True when the fetch wrapper is installed and statuses are actually observed. */
+  statusCaptureOn: boolean;
+  /** Responses with status 429. The credit/throttle signal. */
+  rateLimited: number;
+  /** ISO time of the FIRST 429 of this run, or null. */
+  firstRateLimitedAt: string | null;
+  /** ISO time of the most recent 429, or null. */
+  lastRateLimitedAt: string | null;
 }
 
 /**
@@ -90,6 +105,12 @@ export class RpcMeter {
   /** Marks the start of the current reporting window. */
   private windowStartMs: number;
   private windowStartCalls = 0;
+
+  private statusCaptureOn = false;
+  private readonly statusCounts = new Map<number, number>();
+  private rateLimited = 0;
+  private firstRateLimitedMs: number | null = null;
+  private lastRateLimitedMs: number | null = null;
 
   constructor(nowMs: number) {
     this.startedAtMs = nowMs;
@@ -122,6 +143,37 @@ export class RpcMeter {
     return parsed.length;
   }
 
+  /** Called once the fetch wrapper is installed, so a report can distinguish "no 429s" from "not watching". */
+  enableStatusCapture(): void {
+    this.statusCaptureOn = true;
+  }
+
+  /**
+   * Records one HTTP response status.
+   *
+   * Status ONLY. The response body is never read here: reading it consumes the
+   * stream and the caller then gets nothing back, which would turn a counter
+   * into an outage. A 429 is the whole signal; the "max usage reached" string
+   * adds nothing the status does not already say.
+   *
+   * Returns true when this was the FIRST 429 of the run, so the caller can log
+   * that one loudly and immediately rather than at the next 10-minute tick.
+   * Early warning delivered on the normal reporting cadence is not early
+   * warning - that is the entire lesson of the credit exhaustion.
+   */
+  recordStatus(status: number, nowMs: number): boolean {
+    this.statusCounts.set(status, (this.statusCounts.get(status) ?? 0) + 1);
+    if (status !== 429) return false;
+
+    this.rateLimited++;
+    this.lastRateLimitedMs = nowMs;
+    if (this.firstRateLimitedMs === null) {
+      this.firstRateLimitedMs = nowMs;
+      return true;
+    }
+    return false;
+  }
+
   private bump(method: string): void {
     this.byMethod.set(method, (this.byMethod.get(method) ?? 0) + 1);
   }
@@ -152,6 +204,13 @@ export class RpcMeter {
       callsPerHourInWindow: perHour(windowCalls, windowMs),
       methods,
       unparsedBodies: this.unparsed,
+      statusCounts: Object.fromEntries(
+        [...this.statusCounts.entries()].sort((a, b) => a[0] - b[0]).map(([k, v]) => [String(k), v])
+      ),
+      statusCaptureOn: this.statusCaptureOn,
+      rateLimited: this.rateLimited,
+      firstRateLimitedAt: this.firstRateLimitedMs === null ? null : new Date(this.firstRateLimitedMs).toISOString(),
+      lastRateLimitedAt: this.lastRateLimitedMs === null ? null : new Date(this.lastRateLimitedMs).toISOString(),
     };
   }
 
@@ -215,6 +274,22 @@ function methodOf(entry: unknown): string | null {
   return typeof m === "string" && m.length > 0 ? m : null;
 }
 
+/**
+ * The status half of the summary line.
+ *
+ * Says "not watched" rather than "0 rate-limited" when capture is off. Those
+ * are different facts and printing the second when the first is true is exactly
+ * how a blind spot gets read as a clean bill of health.
+ */
+export function formatStatusPart(s: MeterSnapshot): string {
+  if (!s.statusCaptureOn) return "HTTP status: not watched (capture off)";
+  const codes = Object.entries(s.statusCounts)
+    .map(([code, n]) => `${code}x${n}`)
+    .join(" ");
+  const warn = s.rateLimited > 0 ? ` *** ${s.rateLimited} RATE-LIMITED (first ${s.firstRateLimitedAt}) ***` : "";
+  return `HTTP: ${codes || "none yet"}${warn}`;
+}
+
 /** The one-line human summary written to the console on every tick. */
 export function formatMeterLine(s: MeterSnapshot): string {
   const rate = (v: number | null) => (v === null ? "not enough uptime yet" : `${Math.round(v)}/h`);
@@ -228,6 +303,7 @@ export function formatMeterLine(s: MeterSnapshot): string {
     `${(s.windowMs / 60_000).toFixed(0)}m` +
     `${s.httpRequests !== s.rpcCalls ? ` [${s.httpRequests} HTTP requests, batched]` : ""}` +
     (top ? ` | top: ${top}` : "") +
+    ` | ${formatStatusPart(s)}` +
     ` | NOTE: requests, not credits - Helius weights methods differently`
   );
 }

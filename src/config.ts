@@ -232,6 +232,11 @@ export interface LoggingConfig {
    */
   rpcMeterFile?: string;
   rpcMeterIntervalMs?: number;
+  /**
+   * Install the status-capturing fetch wrapper. Committed default false.
+   * OPIUMO_CAPTURE_RPC_STATUS in .env overrides it for a single run.
+   */
+  captureRpcStatus?: boolean;
 }
 
 export interface PerpsConfig {
