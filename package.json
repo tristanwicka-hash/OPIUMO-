@@ -51,7 +51,9 @@
     "test:trailing": "ts-node tests/test-trailing-stop.ts",
     "test:trailing-backtest": "ts-node tests/test-trailing-backtest.ts",
     "schedule:savings": "ts-node scripts/schedule-savings.ts",
-    "test:savings": "ts-node tests/test-schedule-savings.ts"
+    "test:savings": "ts-node tests/test-schedule-savings.ts",
+    "outcome:backlog": "ts-node scripts/outcome-backlog.ts",
+    "test:backlog": "ts-node tests/test-outcome-backlog.ts"
   },
   "dependencies": {
     "@drift-labs/sdk": "^2.156.0",
