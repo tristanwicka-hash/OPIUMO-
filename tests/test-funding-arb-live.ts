@@ -12,6 +12,7 @@
  *
  * Run with: npm run test:funding-arb-live
  */
+import { skip } from "./exit-codes";
 import { getConnection } from "../src/rpc/connection";
 import { getDriftClient, confirmDriftConnection, unsubscribeDriftClient } from "../src/perps/driftClient";
 import { FundingArbStrategy } from "../src/perps/strategies/fundingArb/engine";
@@ -22,8 +23,7 @@ async function main() {
   const config = loadConfig();
 
   if (!config.walletPrivateKey) {
-    console.error("SKIPPED: WALLET_PRIVATE_KEY is not set in .env - needed even just to read account/market state.");
-    process.exit(1);
+    skip("WALLET_PRIVATE_KEY is not set in .env - needed even just to read account/market state.");
   }
 
   console.log(`market=${config.fundingArb.market} env=${config.perps.env} fundingArb.enabled=${config.fundingArb.enabled}`);

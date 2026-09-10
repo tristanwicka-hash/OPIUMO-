@@ -7,6 +7,7 @@
  *
  * Run with: npm run test:perps-connection
  */
+import { skip } from "./exit-codes";
 import { getConnection } from "../src/rpc/connection";
 import { getDriftClient, confirmDriftConnection, unsubscribeDriftClient } from "../src/perps/driftClient";
 import { getAccountSnapshot } from "../src/perps/positions";
@@ -17,11 +18,9 @@ async function main() {
   const config = loadConfig();
 
   if (!config.walletPrivateKey) {
-    console.error(
-      "SKIPPED: WALLET_PRIVATE_KEY is not set in .env. Perps needs a signer even just to " +
+    skip("WALLET_PRIVATE_KEY is not set in .env. Perps needs a signer even just to " +
         "read account state - fill it in (a fresh devnet-only keypair is fine for testing) and re-run."
     );
-    process.exit(1);
   }
 
   console.log(`env=${config.perps.env} subAccountId=${config.perps.subAccountId}`);
