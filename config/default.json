@@ -84,6 +84,15 @@
     "fetchTimeoutMs": 20000,
     "sampleRate": 0.08
   },
+  "schedule": {
+    "_comment": "ENABLED 2026-09-10 to cut credit use, on measured data (APPROVALS item 13). OFF 07:00-11:59 UTC, ON 12:00-07:00 - a 19-hour window crossing midnight. Those five are the five quietest MEASURED hours in npm run histogram (700-863 detections/h against a 1,677/h peak). Every hour with insufficient observation stays ON: 01-06 and 20-21 all fall inside the active window, because an hour switched off on no evidence becomes permanently unobservable. Burn scales with detections at ~10.7 calls each, measured against logs/rpc-meter.jsonl, so this removes 20.8% of the clock but only 15.3% of the burn - the saving is NOT hours x average rate. Projected 6.92-7.65M/month against the 10M plan, 23-31% headroom. Set enabled=false to revert; the meter will show within a day whether the projection held.",
+    "enabled": true,
+    "timezone": "UTC",
+    "activeWindows": [
+      { "days": "all", "start": "12:00", "end": "07:00" }
+    ],
+    "outsideWindow": "idle"
+  },
   "logging": {
     "level": "info",
     "logDir": "logs",
