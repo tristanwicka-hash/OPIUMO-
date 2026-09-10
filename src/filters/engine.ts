@@ -38,7 +38,22 @@ export interface FilterResult {
  * metric, a non-empty result here means the final decision is ALREADY SKIP -
  * running stage 2 could only add more reasons, never remove one.
  */
-export function evaluateStage1Reasons(metrics: TokenMetrics, filters: FiltersConfig): string[] {
+/**
+ * `includeHolderRules: false` runs every stage-1 rule EXCEPT the two that need
+ * holder data. It exists so the collector can ask "is this token still capable
+ * of passing on the CHEAP checks alone?" before deciding to spend a 10-credit
+ * DAS call on it - see src/data/holderData.ts.
+ *
+ * It is the same function rather than a copy on purpose: a second
+ * implementation of these rules would drift, and the gate deciding whether to
+ * spend money must not disagree with the rules that spend it.
+ */
+export function evaluateStage1Reasons(
+  metrics: TokenMetrics,
+  filters: FiltersConfig,
+  opts: { includeHolderRules?: boolean } = {}
+): string[] {
+  const includeHolderRules = opts.includeHolderRules !== false;
   const reasons: string[] = [];
 
   // -- liquidity --
@@ -51,7 +66,10 @@ export function evaluateStage1Reasons(metrics: TokenMetrics, filters: FiltersCon
   }
 
   // -- top holder concentration --
-  if (metrics.topHolderPercent === null) {
+  if (!includeHolderRules) {
+    // Skipped deliberately: the caller is deciding whether holder data is worth
+    // fetching at all, so it cannot require it yet.
+  } else if (metrics.topHolderPercent === null) {
     reasons.push("top holder % unknown (could not fetch largest accounts)");
   } else if (metrics.topHolderPercent > filters.maxTopHolderPercent) {
     reasons.push(
@@ -60,7 +78,9 @@ export function evaluateStage1Reasons(metrics: TokenMetrics, filters: FiltersCon
   }
 
   // -- dev wallet holding --
-  if (metrics.devWalletPercent === null) {
+  if (!includeHolderRules) {
+    // As above.
+  } else if (metrics.devWalletPercent === null) {
     reasons.push("dev wallet % unknown (could not fetch creator balance)");
   } else if (metrics.devWalletPercent > filters.maxDevWalletPercent) {
     reasons.push(

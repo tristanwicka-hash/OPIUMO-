@@ -13,6 +13,8 @@ import {
   perHour,
   formatMeterLine,
   formatStatusPart,
+  creditsForMethod,
+  CREDIT_COST,
   MIN_UPTIME_FOR_RATE_MS,
 } from "../src/rpc/rpcMeter";
 
@@ -211,6 +213,31 @@ check(
   "status capture does not disturb the call counters",
   cap.snapshot(T0 + HOUR).rpcCalls === 1
 );
+
+section("CREDITS, NOT CALLS - a 10-credit method must not read as 1");
+
+check("standard JSON-RPC is 1 credit", creditsForMethod("getBalance") === 1);
+check("an unknown method defaults to 1", creditsForMethod("somethingNew") === 1);
+check("DAS getTokenAccounts is 10", creditsForMethod("getTokenAccounts") === 10);
+check("other DAS methods are 10 too", CREDIT_COST.getAsset === 10 && CREDIT_COST.searchAssets === 10);
+check("getProgramAccounts is 10", creditsForMethod("getProgramAccounts") === 10);
+
+const creditMeter = new RpcMeter(T0);
+for (let i = 0; i < 90; i++) creditMeter.record(body("getBalance"));
+for (let i = 0; i < 10; i++) creditMeter.record(body("getTokenAccounts"));
+const credSnap = creditMeter.snapshot(T0 + HOUR);
+check("calls counts every call equally", credSnap.rpcCalls === 100);
+check("credits weights the DAS calls: 90 + 10x10 = 190", credSnap.credits === 190, `got ${credSnap.credits}`);
+check("credits and calls DIVERGE once a 10x method is in use", credSnap.credits !== credSnap.rpcCalls);
+check("creditsPerHour is the billable rate", credSnap.creditsPerHour === 190);
+check("callsPerHour stays the call rate", credSnap.callsPerHourSinceStart === 100);
+check(
+  "with no DAS calls the two agree, so nothing changed for the old case",
+  (() => { const m = new RpcMeter(T0); for (let i=0;i<50;i++) m.record(body("getSlot"));
+           const s2 = m.snapshot(T0+HOUR); return s2.credits === s2.rpcCalls; })()
+);
+check("the printed line reports CREDITS", formatMeterLine(credSnap).includes("190 CREDITS"));
+check("and a credits/hour figure", formatMeterLine(credSnap).includes("190 credits/h"));
 
 console.log(`\nTotal: ${pass} passed, ${fail} failed`);
 if (failures.length > 0) {

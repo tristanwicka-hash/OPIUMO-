@@ -2,6 +2,7 @@ import { Connection, PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { unpackMint, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, getExtensionTypes, ExtensionType } from "@solana/spl-token";
 import { loadConfig, PollingConfig, FiltersConfig } from "../config";
 import { evaluateStage1Reasons } from "../filters/engine";
+import { collectHolderData } from "./holderData";
 import { Logger } from "../util/logger";
 import { NewPoolEvent } from "../watcher/types";
 
@@ -315,6 +316,13 @@ export async function collectTokenMetrics(
   const mint = new PublicKey(event.mint);
   const startedAt = Date.now();
   const timeout = <T>(p: Promise<T>, label: string) => withTimeout(p, polling.metricsFetchTimeoutMs, label);
+  // Holder-fetch policy. Optional in config so an older config file still runs;
+  // the defaults are the ones measured on 2026-09-10.
+  const holderRaw = (config as unknown as Record<string, any>).holderData ?? {};
+  const holderCfg = {
+    allowDas: holderRaw.allowDas !== false,
+    dasAgeThresholdMs: typeof holderRaw.dasAgeThresholdMs === "number" ? holderRaw.dasAgeThresholdMs : 120_000,
+  };
 
   // ---------------------------------------------------------------------
   // STAGE 1 - the cheap metrics (~4 RPC calls), run concurrently.
@@ -393,41 +401,90 @@ export async function collectTokenMetrics(
 
   await Promise.all([renouncePromise, liquidityPromise, lpPromise]);
 
+  /**
+   * HOLDER DATA - THE EXPENSIVE CALL, DELIBERATELY LAST.
+   *
+   * Previously this ran for every token, unconditionally, and cost 2 RPC calls
+   * each. Measured 2026-09-10: only ~11% of tokens pass the cheap checks, so
+   * ~89% of that spend bought nothing - the token was already failing on
+   * liquidity.
+   *
+   * Now the cheap stage-1 rules are evaluated FIRST, without the holder rules
+   * (that is what includeHolderRules:false is for), and holder data is only
+   * fetched for tokens still capable of passing. For young tokens that means a
+   * 10-credit DAS call, because the 1-credit largest-accounts index does not
+   * exist yet at detection - see src/data/holderData.ts for the evidence.
+   */
   let topHolderPercent: number | null = null;
   let devWalletPercent: number | null = null;
-  await Promise.all([
-    (async () => {
+  let holderSource: string = "not-fetched";
+  let holderCredits = 0;
+
+  {
+    // Only the fields the cheap stage-1 rules read. Holder fields are null
+    // because that is exactly what we have not paid for yet, and
+    // includeHolderRules:false tells the rules not to require them.
+    const cheapMetrics = {
+      mint: mint.toBase58(),
+      fetchedAt: new Date().toISOString(),
+      decimals,
+      liquiditySol,
+      topHolderPercent: null,
+      devWalletPercent: null,
+      mintAuthorityRenounced,
+      freezeAuthorityRenounced,
+      uniqueWallets: null,
+      transactionCount: null,
+      riskyTokenExtensions,
+      creatorLpPercent,
+      stale: false,
+      warnings: [],
+    } as unknown as TokenMetrics;
+    const cheapReasons = evaluateStage1Reasons(cheapMetrics, filters, { includeHolderRules: false });
+
+    if (cheapReasons.length > 0) {
+      // Already failing on something cheaper. Spending 10 credits to learn how
+      // concentrated a token we are rejecting anyway is money for nothing.
+      holderSource = "skipped-cheap-fail";
+      warnings.push(
+        `holder data not fetched - token already failed a cheaper check (${cheapReasons[0]}). ` +
+          `Reported unchecked, not assumed.`
+      );
+    } else {
+      const exclude = new Set<string>(
+        [
+          event.poolAddress,
+          event.pumpfunAssociatedBondingCurve,
+          event.raydiumCoinVault,
+          event.raydiumPcVault,
+        ].filter(Boolean) as string[]
+      );
+      const detectedAtMs = Date.parse(event.detectedAt);
+      const ageMs = Number.isNaN(detectedAtMs) ? 0 : Date.now() - detectedAtMs;
       try {
-        // The bonding-curve PDA (poolAddress) is NOT a token account, so it can
-        // never appear in getTokenLargestAccounts and excluding it does nothing.
-        // The account that actually holds Pump.fun's un-bought supply is the
-        // bonding curve's associated token account - without it, the pool itself
-        // is counted as the top holder and every pre-migration token reads ~99%.
-        const exclude = new Set<string>(
-          [
-            event.poolAddress,
-            event.pumpfunAssociatedBondingCurve,
-            event.raydiumCoinVault,
-            event.raydiumPcVault,
-          ].filter(Boolean) as string[]
+        const holder = await timeout(
+          collectHolderData(connection, {
+            mint,
+            supplyRaw,
+            creator: event.creator ? new PublicKey(event.creator) : null,
+            excludeAddresses: exclude,
+            tokenAgeMs: ageMs,
+            dasAgeThresholdMs: holderCfg.dasAgeThresholdMs,
+            allowDas: holderCfg.allowDas,
+          }),
+          "holder data"
         );
-        topHolderPercent = await timeout(getTopHolderPercent(connection, mint, supplyRaw, exclude), "top holder %");
+        topHolderPercent = holder.topHolderPercent;
+        devWalletPercent = holder.devWalletPercent;
+        holderSource = holder.source;
+        holderCredits = holder.creditsSpent;
+        if (holder.error) warnings.push(`holderData: ${holder.error}`);
       } catch (err: any) {
-        warnings.push(`topHolderPercent: ${err?.message || err}`);
+        warnings.push(`holderData: ${err?.message || err}`);
+        holderSource = "error";
       }
-    })(),
-    (async () => {
-      try {
-        if (event.creator) {
-          devWalletPercent = await timeout(getWalletMintPercent(connection, mint, new PublicKey(event.creator), supplyRaw), "dev wallet %");
-        } else {
-          warnings.push("no creator wallet identified - cannot compute devWalletPercent");
-        }
-      } catch (err: any) {
-        warnings.push(`devWalletPercent: ${err?.message || err}`);
-      }
-    })(),
-  ]);
+    }
+  }
 
   const stage1ElapsedMs = Date.now() - startedAt;
 

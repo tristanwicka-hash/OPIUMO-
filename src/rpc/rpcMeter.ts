@@ -48,6 +48,31 @@ export const MIN_UPTIME_FOR_RATE_MS = 60_000;
 export const DEFAULT_METER_INTERVAL_MS = 600_000; // 10 minutes -> 6 samples an hour
 export const DEFAULT_METER_FILE = "logs/rpc-meter.jsonl";
 
+/**
+ * Credits per call, by method. Helius bills DAS methods at 10 credits and
+ * standard JSON-RPC at 1 ("DAS calls are 10 credits", helius.dev/pricing,
+ * checked 2026-09-10). getProgramAccounts and archival calls are also 10.
+ *
+ * This exists because the meter counted CALLS and reported them as if they were
+ * credits. That was harmless while everything cost 1. The moment a 10-credit
+ * method went live it became a silent 15% undercount of the actual bill - the
+ * instrument measuring affordability was itself wrong about the price.
+ */
+export const CREDIT_COST: Record<string, number> = {
+  getTokenAccounts: 10,
+  getAsset: 10,
+  getAssetsByOwner: 10,
+  getAssetsByGroup: 10,
+  searchAssets: 10,
+  getSignaturesForAsset: 10,
+  getProgramAccounts: 10,
+};
+export const DEFAULT_CREDIT_COST = 1;
+
+export function creditsForMethod(method: string): number {
+  return CREDIT_COST[method] ?? DEFAULT_CREDIT_COST;
+}
+
 export interface MethodShare {
   method: string;
   calls: number;
@@ -61,8 +86,12 @@ export interface MeterSnapshot {
   uptimeMs: number;
   /** HTTP POSTs made. A batched request is ONE of these. */
   httpRequests: number;
-  /** JSON-RPC calls made. A batch of 10 counts as 10 - this is what a provider bills. */
+  /** JSON-RPC calls made. A batch of 10 counts as 10. */
   rpcCalls: number;
+  /** CREDITS, which is what is actually billed. Differs from rpcCalls once any 10-credit method is in use. */
+  credits: number;
+  /** Credits per hour - the number to compare against a plan allowance. */
+  creditsPerHour: number | null;
   /** Calls per hour averaged over the whole run. Null until there is enough uptime. */
   callsPerHourSinceStart: number | null;
   /** Length of the most recent reporting window. */
@@ -100,6 +129,7 @@ export class RpcMeter {
   private httpRequests = 0;
   private rpcCalls = 0;
   private unparsed = 0;
+  private creditTotal = 0;
   private readonly byMethod = new Map<string, number>();
 
   /** Marks the start of the current reporting window. */
@@ -176,6 +206,7 @@ export class RpcMeter {
 
   private bump(method: string): void {
     this.byMethod.set(method, (this.byMethod.get(method) ?? 0) + 1);
+    this.creditTotal += creditsForMethod(method);
   }
 
   /** Reads the counters without disturbing the reporting window. */
@@ -199,6 +230,8 @@ export class RpcMeter {
       httpRequests: this.httpRequests,
       rpcCalls: this.rpcCalls,
       callsPerHourSinceStart: perHour(this.rpcCalls, uptimeMs),
+      credits: this.creditTotal,
+      creditsPerHour: perHour(this.creditTotal, uptimeMs),
       windowMs,
       windowCalls,
       callsPerHourInWindow: perHour(windowCalls, windowMs),
@@ -298,7 +331,8 @@ export function formatMeterLine(s: MeterSnapshot): string {
     .map((m) => `${m.method} ${m.calls} (${(m.share * 100).toFixed(0)}%)`)
     .join(", ");
   return (
-    `RPC burn: ${s.rpcCalls} calls in ${(s.uptimeMs / 3_600_000).toFixed(2)}h ` +
+    `RPC burn: ${s.rpcCalls} calls / ${s.credits} CREDITS in ${(s.uptimeMs / 3_600_000).toFixed(2)}h ` +
+    `-> ${s.creditsPerHour === null ? "not enough uptime yet" : Math.round(s.creditsPerHour) + " credits/h"}; ` +
     `-> ${rate(s.callsPerHourSinceStart)} average, ${rate(s.callsPerHourInWindow)} in the last ` +
     `${(s.windowMs / 60_000).toFixed(0)}m` +
     `${s.httpRequests !== s.rpcCalls ? ` [${s.httpRequests} HTTP requests, batched]` : ""}` +
