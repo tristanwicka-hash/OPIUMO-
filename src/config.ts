@@ -146,6 +146,29 @@ export interface DelayProbeConfig {
   sampleRate: number;
 }
 
+export interface WatchlistConfig {
+  enabled: boolean;
+  /** How often a budgeted round runs. */
+  tickIntervalMs: number;
+  /** Hard ceiling on cheap liquidity reads per round - the RPC budget, enforced not hoped for. */
+  maxChecksPerTick: number;
+  /** Most tokens under observation at once. Refusing past this is visible in the log, never silent. */
+  maxWatched: number;
+
+  /* Policy tunables - see src/watchlist/policy.ts for what each one is for. */
+  deadBelowSol?: number;
+  patienceChecks?: number;
+  maxAgeMs?: number;
+  promoteOnMultiple?: number;
+  promoteOnAbsoluteSol?: number;
+  maxFullChecksPerToken?: number;
+  graduationSol?: number;
+  nearMigrationFraction?: number;
+  intervalFreshMs?: number;
+  intervalWarmingMs?: number;
+  intervalNearMigrationMs?: number;
+}
+
 export interface OutcomeTrackerConfig {
   enabled: boolean;
   /**
@@ -191,6 +214,7 @@ export interface LoggingConfig {
   perpsTradesFile: string;
   delayProbeFile: string;
   outcomeFile: string;
+  watchlistFile: string;
   maxLogFileSizeMB: number;
 }
 
@@ -237,6 +261,7 @@ export interface AppConfig {
   polling: PollingConfig;
   delayProbe: DelayProbeConfig;
   outcomeTracker: OutcomeTrackerConfig;
+  watchlist: WatchlistConfig;
   logging: LoggingConfig;
   perps: PerpsConfig;
   fundingArb: FundingArbConfig;
@@ -300,6 +325,15 @@ function validate(config: AppConfig): void {
     if (config.delayProbe.fetchTimeoutMs <= 0) errors.push("delayProbe.fetchTimeoutMs must be > 0");
     if (config.delayProbe.sampleRate <= 0 || config.delayProbe.sampleRate > 1) {
       errors.push("delayProbe.sampleRate must be > 0 and <= 1 (fraction of detected tokens to probe)");
+    }
+  }
+  if (config.watchlist?.enabled) {
+    if (config.watchlist.tickIntervalMs <= 0) errors.push("watchlist.tickIntervalMs must be > 0");
+    if (config.watchlist.maxChecksPerTick <= 0) errors.push("watchlist.maxChecksPerTick must be > 0");
+    if (config.watchlist.maxWatched <= 0) errors.push("watchlist.maxWatched must be > 0");
+    if (config.watchlist.nearMigrationFraction !== undefined) {
+      const f = config.watchlist.nearMigrationFraction;
+      if (f <= 0 || f >= 1) errors.push("watchlist.nearMigrationFraction must be between 0 and 1 exclusive");
     }
   }
   if (config.outcomeTracker?.enabled) {

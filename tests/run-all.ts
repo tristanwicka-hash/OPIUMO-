@@ -32,6 +32,8 @@ const suites = [
   { name: "Swap priority fee (offline)", script: "tests/test-priority-fee.ts" },
   { name: "Outcome analysis (offline)", script: "tests/test-outcome-analysis.ts" },
   { name: "Outcome tracker state (offline)", script: "tests/test-outcome-tracker.ts" },
+  { name: "Watchlist policy (offline)", script: "tests/test-watchlist-policy.ts" },
+  { name: "Watchlist runtime (offline)", script: "tests/test-watchlist-runtime.ts" },
 ];
 
 let anyFailed = false;

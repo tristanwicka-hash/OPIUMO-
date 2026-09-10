@@ -38,6 +38,8 @@
     "test:delay-probe-report": "ts-node tests/test-delay-probe-report.ts",
     "test:outcomes": "ts-node tests/test-outcome-analysis.ts",
     "test:outcome-tracker": "ts-node tests/test-outcome-tracker.ts",
+    "test:watchlist": "ts-node tests/test-watchlist-policy.ts",
+    "test:watchlist-runtime": "ts-node tests/test-watchlist-runtime.ts",
     "test:priority-fee": "ts-node tests/test-priority-fee.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

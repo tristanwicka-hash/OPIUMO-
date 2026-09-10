@@ -10,6 +10,7 @@ import { SpotTradingEngine } from "./trading/engine";
 import { WorkQueue } from "./util/workQueue";
 import { DelayProbe } from "./data/delayProbe";
 import { OutcomeTracker } from "./data/outcomeTracker";
+import { Watchlist } from "./watchlist/watchlist";
 
 const logger = new Logger("main", loadConfig().logging.level);
 
@@ -99,6 +100,17 @@ async function main() {
     );
   }
 
+  // Unlike the probe and the tracker, this one CAN reach the trading engine -
+  // but only through the same onFilterPass the live path uses, which still
+  // refuses everything while trading.enabled is false. It changes *when* a
+  // token is offered for a decision, never who decides.
+  const watchlist = new Watchlist(connection, {
+    onPass: async (event, result) => {
+      if (tradingEngine) await tradingEngine.onFilterPass(event, result);
+    },
+  });
+  watchlist.start();
+
   // Reconciliation counters: detected === decided + dropped + still-queued.
   let detected = 0;
   let decided = 0;
@@ -149,6 +161,13 @@ async function main() {
       // of the live path.
       outcomeTracker.schedule(event, metrics.liquiditySol ?? null);
 
+      // A SKIP at t+0 is no longer final. Both known winners were rejected here
+      // for being new and grew past the thresholds afterwards, so the token goes
+      // under observation instead of being forgotten.
+      if (result.decision !== "PASS") {
+        watchlist.add(event, metrics.liquiditySol ?? null);
+      }
+
       if (result.decision === "PASS" && tradingEngine) {
         await tradingEngine.onFilterPass(event, result);
       }
@@ -183,6 +202,17 @@ async function main() {
         delayProbe.recordStats(detected);
       }
     }
+    if (config.watchlist.enabled) {
+      const w = watchlist.stats();
+      if (w.watching > 0) {
+        const stages = Object.entries(w.byStage).map(([k, v]) => `${k}=${v}`).join(" ");
+        logger.info(
+          `watchlist: ${w.watching} watched (${stages}), ${w.cheapChecks} liquidity reads, ` +
+            `${w.fullChecks} full evaluations, ${w.passes} passes, ${w.evicted} evicted` +
+            (w.skippedForBudget > 0 ? `, ${w.skippedForBudget} checks deferred for budget` : "")
+        );
+      }
+    }
     if (config.outcomeTracker.enabled) {
       const o = outcomeTracker.stats();
       if (o.pendingCheckpoints > 0 || o.running > 0) {
@@ -211,6 +241,7 @@ async function main() {
     delayProbe.stop();
     // Pending checkpoints stay on disk on purpose - the next run replays them.
     outcomeTracker.stop();
+    watchlist.stop();
     tradingEngine?.stop();
     await watcher.stop();
     process.exit(0);

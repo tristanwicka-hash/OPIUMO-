@@ -92,7 +92,8 @@
     "perpsTradesFile": "logs/perps-trades.jsonl",
     "delayProbeFile": "logs/delay-probe.jsonl",
     "maxLogFileSizeMB": 20,
-    "outcomeFile": "logs/outcomes.jsonl"
+    "outcomeFile": "logs/outcomes.jsonl",
+    "watchlistFile": "logs/watchlist.jsonl"
   },
   "perps": {
     "_comment": "Perpetuals trading via Drift Protocol. PLUMBING ONLY - there is no entry strategy wired up yet (see README). Leverage means you can lose your whole position fast, faster than spot - keep enabled=false and env=devnet until you've read the risk engine's tests and tried it with fake devnet funds first.",
@@ -142,5 +143,23 @@
     "pendingStateFile": "logs/outcome-pending.json",
     "lateToleranceMs": 3600000,
     "persistDebounceMs": 5000
+  },
+  "watchlist": {
+    "_comment": "Keeps tokens under observation across their life instead of judging them once, a few hundred ms after detection. Real data from 2026-09-09: of 1,236 tracked tokens exactly 3 became worth buying, and both winners examined closely started BELOW filters.minLiquiditySol and grew past it later (0.278 -> 4.348 SOL; 1.429 -> 7.39 SOL). They were rejected for being new, not for being bad. Waiting longer before the single check does not fix it either - that was tested out to 2h and the activity curve is flat. TWO TIERS, because the calls cost wildly different amounts: a liquidity reading is ONE getBalance; a full metrics evaluation is ~110 calls (walletActivitySampleSize 100 = ~91% of all RPC traffic per the latency audit). So liquidity is polled cheaply and only tokens whose liquidity actually moves earn the expensive evaluation. maxChecksPerTick is a HARD ceiling - this bot already returns 429s on a free tier, and work that does not fit waits for the next tick and is recorded, never silently dropped. A PASS goes to the same SpotTradingEngine.onFilterPass the live path uses, which still refuses everything unless trading.enabled is true - this adds no new route to a buy, only a new moment at which one is offered. In memory only: a restart empties it, which is bounded because entries age out after maxAgeMs anyway. Set enabled=false to switch off.",
+    "enabled": true,
+    "tickIntervalMs": 15000,
+    "maxChecksPerTick": 12,
+    "maxWatched": 4000,
+    "deadBelowSol": 0.05,
+    "patienceChecks": 5,
+    "maxAgeMs": 21600000,
+    "promoteOnMultiple": 2.5,
+    "promoteOnAbsoluteSol": 3,
+    "maxFullChecksPerToken": 4,
+    "graduationSol": 85,
+    "nearMigrationFraction": 0.7,
+    "intervalFreshMs": 60000,
+    "intervalWarmingMs": 30000,
+    "intervalNearMigrationMs": 15000
   }
 }
