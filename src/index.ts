@@ -11,6 +11,7 @@ import { WorkQueue } from "./util/workQueue";
 import { DelayProbe } from "./data/delayProbe";
 import { OutcomeTracker } from "./data/outcomeTracker";
 import { Watchlist } from "./watchlist/watchlist";
+import { evaluateSchedule, weeklyOpenHours } from "./schedule/scheduler";
 
 const logger = new Logger("main", loadConfig().logging.level);
 
@@ -111,7 +112,11 @@ async function main() {
   });
   watchlist.start();
 
-  // Reconciliation counters: detected === decided + dropped + still-queued.
+  // Reconciliation counters:
+  //   detected === decided + dropped + notEvaluated + still-queued
+  // `notEvaluated` joined this identity when the scheduler did. Leaving it out
+  // would have made every scheduled run appear to lose tokens, which is exactly
+  // the kind of quiet discrepancy that gets explained away rather than chased.
   let detected = 0;
   let decided = 0;
   let dropped = 0;
@@ -174,8 +179,53 @@ async function main() {
     },
   });
 
+  // Active-window schedule. A COST control: it decides whether the bot looks,
+  // never what passes. Nothing below reads a filter threshold and nothing in
+  // src/filters/ reads the schedule - keeping them independent is what lets the
+  // outcome study stay interpretable, because "this token was skipped" has to
+  // keep meaning exactly one thing.
+  const schedule = config.schedule;
+  if (schedule.enabled) {
+    logger.warn(
+      `*** SCHEDULE IS ON *** windows (UTC): ` +
+        schedule.activeWindows.map((w) => `${w.days} ${w.start}-${w.end}`).join("; ") +
+        ` = ${weeklyOpenHours(schedule).toFixed(1)}h/week (${((weeklyOpenHours(schedule) / 168) * 100).toFixed(0)}% of 24/7). ` +
+        `Outside those hours detected tokens are NOT evaluated and are recorded to ` +
+        `${config.logging.decisionsFile} as "outside-schedule" - so an idle window and a quiet ` +
+        `night never look the same in the logs.`
+    );
+  } else {
+    logger.info("Schedule is OFF - running continuously. Turn it on against scripts/hourly-histogram.ts, not a blog.");
+  }
+  let notEvaluated = 0;
+
   watcher.on("newPool", (event: NewPoolEvent) => {
     detected++;
+
+    // The gate. Checked per detection rather than on a timer so the window
+    // boundary is exact, and evaluated BEFORE anything that costs an RPC call -
+    // metrics collection is the ~110-call step this exists to avoid paying for.
+    const verdict = evaluateSchedule(schedule, new Date());
+    if (!verdict.active) {
+      notEvaluated++;
+      decisionLog.recordOutsideSchedule({
+        mint: event.mint,
+        signature: event.signature,
+        source: event.source,
+        detectedAt: event.detectedAt,
+        reason: verdict.reason,
+        detail: verdict.detail,
+        nextOpenUtc: verdict.nextOpenUtc,
+      });
+      // The delay probe and outcome tracker are skipped too - both spend RPC
+      // calls, and tracking what a token became when we never evaluated it
+      // would put outcome data in the log for a decision that was never made.
+      // Checkpoints ALREADY pending from before the window closed still run:
+      // those belong to tokens that were evaluated, and dropping them would
+      // throw away the measurement this bot exists to gather.
+      return;
+    }
+
     queue.push({ event, queuedAt: Date.now() });
     // Scheduled alongside, not inside, the decision path - schedule() returns
     // immediately and a probe failure can never reach the live pipeline.
@@ -232,11 +282,27 @@ async function main() {
     logger.info("Shutting down...");
     clearInterval(queueStatsTimer);
     const s = queue.stats();
-    decisionLog.recordQueueStats({ detected, decided, dropped, queued: s.queued, running: s.running });
+    decisionLog.recordQueueStats({
+      detected,
+      decided,
+      dropped,
+      notEvaluated,
+      queued: s.queued,
+      running: s.running,
+    });
+    const accounted = decided + dropped + notEvaluated + s.queued;
     logger.info(
-      `Final tally: detected=${detected} decided=${decided} dropped=${dropped} stillQueued=${s.queued}. ` +
+      `Final tally: detected=${detected} decided=${decided} dropped=${dropped} ` +
+        `notEvaluated=${notEvaluated} (outside schedule) stillQueued=${s.queued}. ` +
         `These are also in the decision log (event="queue-stats") so the run can be reconciled later.`
     );
+    if (accounted !== detected) {
+      // Says so rather than printing a tally that quietly does not add up.
+      logger.warn(
+        `Reconciliation gap: ${detected} detected but ${accounted} accounted for ` +
+          `(difference ${detected - accounted}). Some tokens went somewhere this tally does not name.`
+      );
+    }
     delayProbe.recordStats(detected);
     delayProbe.stop();
     // Pending checkpoints stay on disk on purpose - the next run replays them.

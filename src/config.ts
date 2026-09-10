@@ -1,6 +1,15 @@
 import fs from "fs";
 import path from "path";
 import dotenv from "dotenv";
+import { ScheduleConfig, DEFAULT_SCHEDULE, validateSchedule } from "./schedule/scheduler";
+
+/**
+ * Re-exported so callers can reach the schedule types from ./config like every
+ * other config type. The schedule block is OPTIONAL in config/default.json:
+ * when absent it defaults to DEFAULT_SCHEDULE (enabled: false), so the bot
+ * behaves exactly as it did before the scheduler existed.
+ */
+export type { ScheduleConfig, ScheduleWindow } from "./schedule/scheduler";
 
 dotenv.config();
 
@@ -270,6 +279,7 @@ export interface AppConfig {
   outcomeTracker: OutcomeTrackerConfig;
   watchlist: WatchlistConfig;
   logging: LoggingConfig;
+  schedule: ScheduleConfig;
   perps: PerpsConfig;
   fundingArb: FundingArbConfig;
   rpcUrl: string;
@@ -302,11 +312,27 @@ function loadJsonConfig(): Omit<AppConfig, "rpcUrl" | "wsUrl" | "walletPrivateKe
     }
     return obj;
   };
-  return strip(parsed);
+  const stripped = strip(parsed);
+
+  // The schedule block is optional. Absent means DEFAULT_SCHEDULE, which is
+  // disabled - so a config file written before the scheduler existed keeps
+  // working and keeps behaving identically. A PARTIAL block is filled in from
+  // the defaults field by field rather than rejected, so adding just
+  // `{"enabled": true, "activeWindows": [...]}` does not also require
+  // restating timezone and outsideWindow.
+  stripped.schedule = { ...DEFAULT_SCHEDULE, ...(stripped.schedule ?? {}) };
+
+  return stripped;
 }
 
 function validate(config: AppConfig): void {
   const errors: string[] = [];
+
+  // Throws with a specific message rather than pushing onto `errors`: a
+  // malformed window ("25:00", a start equal to its end) is not a tuning
+  // mistake to list alongside others, it is a schedule nobody can reason
+  // about, and the message names the exact window.
+  validateSchedule(config.schedule);
 
   if (!config.rpcUrl) errors.push("RPC_URL is not set in .env");
   if (config.trading.totalCapitalSol <= 0) errors.push("trading.totalCapitalSol must be > 0 (your trading bankroll, used to size every position)");

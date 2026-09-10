@@ -43,7 +43,10 @@
     "test:priority-fee": "ts-node tests/test-priority-fee.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:summary": "ts-node tests/test-summary.ts",
-    "test:rpc-meter": "ts-node tests/test-rpc-meter.ts"
+    "test:rpc-meter": "ts-node tests/test-rpc-meter.ts",
+    "test:scheduler": "ts-node tests/test-scheduler.ts",
+    "histogram": "ts-node scripts/hourly-histogram.ts",
+    "test:histogram": "ts-node tests/test-hourly-histogram.ts"
   },
   "dependencies": {
     "@drift-labs/sdk": "^2.156.0",

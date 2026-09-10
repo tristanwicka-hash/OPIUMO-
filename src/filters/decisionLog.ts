@@ -82,6 +82,44 @@ export class DecisionLog {
    * values in the Decision type, so existing tallies cannot silently absorb
    * these as if they were real filter outcomes.
    */
+  /**
+   * A token the scheduler refused to look at.
+   *
+   * Recorded to decisions.jsonl, not just stdout, and with its own event name.
+   * Without this, an idle window and a genuinely quiet night produce the same
+   * thing in the logs - nothing - and every later analysis would read hours the
+   * bot deliberately sat out as hours with no launches. That is the same
+   * masking defect as a skipped test suite counted as a pass.
+   *
+   * It is deliberately NOT a SKIP: a SKIP means the filters looked and said no.
+   * This token was never evaluated, and conflating the two would corrupt the
+   * pass-rate denominator.
+   */
+  recordOutsideSchedule(params: {
+    mint: string;
+    signature: string;
+    source: string;
+    detectedAt: string;
+    reason: string;
+    detail: string;
+    nextOpenUtc: string | null;
+  }): void {
+    this.logger.info(
+      `NOT EVALUATED ${params.mint} (${params.source}) - ${params.detail}`
+    );
+    this.jsonl.append({
+      event: "outside-schedule",
+      decision: "NOT_EVALUATED",
+      mint: params.mint,
+      signature: params.signature,
+      source: params.source,
+      detectedAt: params.detectedAt,
+      scheduleReason: params.reason,
+      detail: params.detail,
+      nextOpenUtc: params.nextOpenUtc,
+    });
+  }
+
   recordDropped(params: { mint: string; signature: string; source: string; detectedAt: string; queueWaitMs: number }): void {
     this.logger.warn(
       `[DROPPED] ${params.source.padEnd(7)} ${params.mint}  never evaluated - queue was full ` +
@@ -94,7 +132,15 @@ export class DecisionLog {
    * A periodic/shutdown tally, written into the same log so totals survive a
    * crash and can be read back without replaying every line.
    */
-  recordQueueStats(stats: { detected: number; decided: number; dropped: number; queued: number; running: number }): void {
+  recordQueueStats(stats: {
+    detected: number;
+    decided: number;
+    dropped: number;
+    /** Detected while the scheduler was closed, so never evaluated. Optional: absent in runs logged before the scheduler existed. */
+    notEvaluated?: number;
+    queued: number;
+    running: number;
+  }): void {
     this.jsonl.append({ event: "queue-stats", ...stats });
   }
 

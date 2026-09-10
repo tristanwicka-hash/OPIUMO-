@@ -83,6 +83,8 @@ const suites = [
   { name: "Watchlist policy (offline)", script: "tests/test-watchlist-policy.ts" },
   { name: "Watchlist runtime (offline)", script: "tests/test-watchlist-runtime.ts" },
   { name: "RPC burn-rate meter (offline)", script: "tests/test-rpc-meter.ts" },
+  { name: "Active-window scheduler (offline)", script: "tests/test-scheduler.ts" },
+  { name: "Hourly detection histogram (offline)", script: "tests/test-hourly-histogram.ts" },
   { name: "Run-summary arithmetic (offline)", script: "tests/test-summary.ts" },
 ];
 
