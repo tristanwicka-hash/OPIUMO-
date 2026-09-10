@@ -211,6 +211,46 @@ check(
   "which is the entire point of option (d): the same data, an order of magnitude cheaper",
   late.creditsSpent < 10
 );
+  section("PROJECT 1: activity metrics resolve late too, and are recorded");
+
+  check("an activity-resolved event is emitted", wl.includes('event: "activity-resolved"'));
+  check("carrying uniqueWallets", wl.includes("uniqueWallets: metrics.uniqueWallets"));
+  check("and transactionCount", wl.includes("transactionCount: metrics.transactionCount"));
+  check("and whether stage 2 actually ran", wl.includes("activitySkippedEarly: metrics.activitySkippedEarly"));
+  check("the re-evaluation forces stage 2", wl.includes("forceActivityMetrics: true"));
+  const actIdx = wl.indexOf('event: "activity-resolved"');
+  check(
+    "it is recorded BEFORE the PASS branch, so SKIPs are captured",
+    actIdx !== -1 && actIdx < wl.indexOf('if (result.decision === "PASS")'),
+    `activity at ${actIdx}`
+  );
+  check("it is a DISTINCT event from holder-resolved", wl.includes('event: "holder-resolved"') && actIdx !== wl.indexOf('event: "holder-resolved"'));
+
+  section("PROJECT 1 ANSWER: the threshold is arithmetically unreachable");
+
+  // transactionCount = getSignaturesForAddress(..., {limit: sampleSize}).length,
+  // so it is CAPPED at the sample size. A threshold above that cap can never be
+  // met by any token in any market.
+  const liveCfg = loadConfig();
+  const sample = liveCfg.polling.walletActivitySampleSize;
+  check(
+    "transactionCount is capped by the sample size, in source",
+    fsW.readFileSync(pathW.resolve(process.cwd(), "src/data/tokenMetrics.ts"), "utf-8")
+      .includes("const transactionCount = signatures.length;")
+  );
+  const cfgSrc = fsW.readFileSync(pathW.resolve(process.cwd(), "src/config.ts"), "utf-8");
+  check("config warns when minTransactionCount exceeds the sample size", cfgSrc.includes("UNREACHABLE FILTER THRESHOLD"));
+  check("it names the arithmetic rather than just complaining", cfgSrc.includes("NO TOKEN CAN EVER PASS"));
+  check("minUniqueWallets is checked the same way", cfgSrc.includes("minUniqueWallets ("));
+  check(
+    "the warning is NOT fatal - it must not take a running bot down over a judgment call",
+    cfgSrc.includes("unreachableThresholds") && !cfgSrc.includes("errors.push(\n      `filters.minTransactionCount")
+  );
+  check(
+    `the live config is currently in that state (minTx ${liveCfg.filters.minTransactionCount} > sample ${sample})`,
+    liveCfg.filters.minTransactionCount > sample
+  );
+
 }
 main().then(() => {
 section("THE EXPENSIVE CALL IS ACTUALLY LAST - structural, in the collector");

@@ -369,6 +369,48 @@ function validate(config: AppConfig): void {
   // about, and the message names the exact window.
   validateSchedule(config.schedule);
 
+  /**
+   * A filter threshold that no token can reach is a bug, not a strict setting.
+   *
+   * `transactionCount` is `getSignaturesForAddress(..., { limit: sampleSize })`
+   * .length, so it is CAPPED at polling.walletActivitySampleSize. If
+   * minTransactionCount exceeds that cap the filter can never pass, whatever the
+   * market does - and it fails silently, looking exactly like a strict filter
+   * doing its job.
+   *
+   * This happened: sampleSize was cut 100 -> 20 on 2026-09-10 for credit
+   * reasons, which left minTransactionCount at 30 permanently unreachable.
+   * Nothing complained, and a 0% pass rate looked like a result. Same for
+   * minUniqueWallets, which cannot exceed the transaction count.
+   */
+  // Collected separately from `errors`: these are LOUD, not fatal. Refusing to
+  // start would take the bot down until someone changes a threshold, and the
+  // thresholds are a judgment call (APPROVALS 17). A running bot that shouts is
+  // more useful than a stopped one that is silent.
+  const unreachableThresholds: string[] = [];
+  const sampleSize = config.polling.walletActivitySampleSize;
+  if (config.filters.minTransactionCount > sampleSize) {
+    unreachableThresholds.push(
+      `filters.minTransactionCount (${config.filters.minTransactionCount}) exceeds ` +
+        `polling.walletActivitySampleSize (${sampleSize}). transactionCount is the number of ` +
+        `signatures in that sample, so it can never exceed ${sampleSize} and NO TOKEN CAN EVER PASS. ` +
+        `Lower the threshold or raise the sample size - but raising the sample costs credits, so ` +
+        `see APPROVALS item 17 before changing either.`
+    );
+  }
+  if (config.filters.minUniqueWallets > sampleSize) {
+    unreachableThresholds.push(
+      `filters.minUniqueWallets (${config.filters.minUniqueWallets}) exceeds ` +
+        `polling.walletActivitySampleSize (${sampleSize}). Unique wallets are counted within the ` +
+        `sample, so this is unreachable for the same reason.`
+    );
+  }
+  for (const u of unreachableThresholds) {
+    // console, not Logger: Logger reads config, so importing it here would be
+    // circular. This has to be visible before anything else is constructed.
+    console.error(`[${new Date().toISOString()}] [ERROR] [config] *** UNREACHABLE FILTER THRESHOLD *** ${u}`);
+  }
+
   if (!config.rpcUrl) errors.push("RPC_URL is not set in .env");
   if (config.trading.totalCapitalSol <= 0) errors.push("trading.totalCapitalSol must be > 0 (your trading bankroll, used to size every position)");
   if (config.trading.riskPercentPerTrade <= 0) errors.push("trading.riskPercentPerTrade must be > 0");

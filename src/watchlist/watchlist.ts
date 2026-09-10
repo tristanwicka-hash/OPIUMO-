@@ -415,6 +415,35 @@ export class Watchlist {
         decision: result.decision,
       } as unknown as WatchlistRecord);
 
+      /**
+       * ACTIVITY METRICS, resolved late - PROJECT 1.
+       *
+       * Same shape of problem as holder data, one layer down. At detection the
+       * two-stage gate skips activity collection whenever stage 1 already
+       * fails, and stage 1 fails because holder data is unknown at t=0. Result:
+       * `activitySkippedEarly` on 10,930 of 10,993 records, and only 59 tokens
+       * ever measured. That is ABSENCE, not a failed threshold.
+       *
+       * The re-evaluation passes forceActivityMetrics, so they are computed
+       * here - and, until now, discarded on anything that was not a PASS.
+       * Recorded as its own event, before the PASS branch, so the rejects are
+       * captured. That is the entire point: the question is what the rejected
+       * tokens actually looked like.
+       */
+      this.log({
+        ts: new Date(nowMs).toISOString(),
+        event: "activity-resolved",
+        mint: entry.mint,
+        stage: entry.stage,
+        uniqueWallets: metrics.uniqueWallets,
+        transactionCount: metrics.transactionCount,
+        // False here means stage 2 actually ran, which is the point of forcing it.
+        activitySkippedEarly: metrics.activitySkippedEarly ?? null,
+        liquiditySol: metrics.liquiditySol,
+        resolvedAfterMs: Number.isNaN(detectedAtMs) ? null : nowMs - detectedAtMs,
+        decision: result.decision,
+      } as unknown as WatchlistRecord);
+
       if (result.decision === "PASS") {
         this.passes++;
         this.log({
