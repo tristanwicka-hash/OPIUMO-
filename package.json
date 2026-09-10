@@ -53,7 +53,8 @@
     "schedule:savings": "ts-node scripts/schedule-savings.ts",
     "test:savings": "ts-node tests/test-schedule-savings.ts",
     "outcome:backlog": "ts-node scripts/outcome-backlog.ts",
-    "test:backlog": "ts-node tests/test-outcome-backlog.ts"
+    "test:backlog": "ts-node tests/test-outcome-backlog.ts",
+    "test:paper-exec": "ts-node tests/test-paper-execution.ts"
   },
   "dependencies": {
     "@drift-labs/sdk": "^2.156.0",

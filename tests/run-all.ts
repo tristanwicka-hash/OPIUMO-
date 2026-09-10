@@ -89,6 +89,7 @@ const suites = [
   { name: "Trailing stop backtest (offline)", script: "tests/test-trailing-backtest.ts" },
   { name: "Schedule savings analysis (offline)", script: "tests/test-schedule-savings.ts" },
   { name: "Outcome backlog analysis (offline)", script: "tests/test-outcome-backlog.ts" },
+  { name: "Paper execution + shadow filters (offline)", script: "tests/test-paper-execution.ts" },
   { name: "Run-summary arithmetic (offline)", script: "tests/test-summary.ts" },
 ];
 
