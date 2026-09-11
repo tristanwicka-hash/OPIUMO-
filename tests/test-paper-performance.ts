@@ -530,6 +530,64 @@ async function main() {
     check("after until -> excluded", isWithinWindow("2026-02-01T00:00:00.000Z", { until: "2026-01-10" }) === false);
   }
 
+  console.log("\n-- expectancy refuses to compute from missing data (Project 2) --");
+  {
+    // A null average win means "there ARE wins but none has a readable return".
+    // Treating that as 0% produced a confident negative expectancy from data
+    // that does not exist - the fleet's recurring defect in miniature.
+    // sizeSol 0 makes returnPercent null while pnl still marks it a win.
+    const trades: TradeRecord[] = [
+      { ts: "2026-01-01T00:00:00.000Z", event: "buy", isPaper: true, mint: "NW1", sizeSol: 0, entryPriceSol: 1e-9, txSignature: "PAPER-NW1-buy" },
+      sell("NW1", "2026-01-01T01:00:00.000Z", 0.5, R_TRAIL),
+      { ts: "2026-01-01T00:00:00.000Z", event: "buy", isPaper: true, mint: "NW2", sizeSol: 0, entryPriceSol: 1e-9, txSignature: "PAPER-NW2-buy" },
+      sell("NW2", "2026-01-01T01:00:00.000Z", 0.5, R_TRAIL),
+      buy("LL1", "2026-01-01T00:00:00.000Z", 1),
+      sell("LL1", "2026-01-01T02:00:00.000Z", -0.2, R_ATR),
+    ];
+    const r = analyze(trades, [], [2, 5, 10]);
+    const reason = String((r as any).expectancyUnavailableReason ?? "");
+    check("there ARE wins", (r.winRatePercent ?? 0) > 0);
+    check("but the average win return is unknown", r.averageWinPercent === null);
+    check("so expectancy is NULL, not computed from a zeroed win side", r.expectancyPercent === null);
+    check("and the report says WHY it is unavailable", reason.includes("readable return"));
+    check("the reason names the risk of the old behaviour", reason.includes("understate"));
+  }
+
+  console.log("\n-- the LOSS side is guarded symmetrically --");
+  {
+    // Added after a mutation escaped: disabling the loss-side guard turned
+    // nothing red, because every test covered the win side. A guard tested on
+    // one branch only is half a guard.
+    const trades: TradeRecord[] = [
+      buy("GW1", "2026-01-01T00:00:00.000Z", 1),
+      sell("GW1", "2026-01-01T01:00:00.000Z", 0.4, R_TRAIL),
+      { ts: "2026-01-01T00:00:00.000Z", event: "buy", isPaper: true, mint: "NL1", sizeSol: 0, entryPriceSol: 1e-9, txSignature: "PAPER-NL1-buy" },
+      sell("NL1", "2026-01-01T02:00:00.000Z", -0.3, R_ATR),
+    ];
+    const r = analyze(trades, [], [2, 5, 10]);
+    const reason = String((r as any).expectancyUnavailableReason ?? "");
+    check("there ARE losses", (r.lossRatePercent ?? 0) > 0);
+    check("but the average loss return is unknown", r.averageLossPercent === null);
+    check("so expectancy is NULL on the loss side too", r.expectancyPercent === null);
+    check("and the reason names the loss side", reason.includes("losing position"));
+    check("naming the opposite risk - overstating", reason.includes("overstate"));
+  }
+
+  console.log("\n-- a zero average IS legitimate when the rate is zero --");
+  {
+    // No wins at all: the win side contributing 0 is correct, not missing data.
+    const trades: TradeRecord[] = [
+      buy("AL1", "2026-01-01T00:00:00.000Z", 1),
+      sell("AL1", "2026-01-01T02:00:00.000Z", -0.2, R_ATR),
+      buy("AL2", "2026-01-01T00:00:00.000Z", 1),
+      sell("AL2", "2026-01-01T03:00:00.000Z", -0.4, R_ATR),
+    ];
+    const r = analyze(trades, [], [2, 5, 10]);
+    check("win rate is 0", r.winRatePercent === 0);
+    check("expectancy IS computed - a genuinely empty win side contributes zero", r.expectancyPercent !== null);
+    check("and it is negative, as an all-loss run should be", (r.expectancyPercent ?? 0) < 0);
+  }
+
   console.log(`\nTotal: ${pass} passed, ${fail} failed`);
   if (fail > 0) process.exit(1);
 }

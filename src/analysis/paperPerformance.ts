@@ -127,6 +127,8 @@ export interface PerformanceReport {
   averageLossPercent: number | null;
   /** winRate * avgWin - lossRate * avgLoss, in percentage points per trade. */
   expectancyPercent: number | null;
+  /** Set when expectancyPercent is null: WHY it could not be computed. */
+  expectancyUnavailableReason?: string | null;
   totalPnlSol: number;
   /** Largest peak-to-trough fall on the cumulative closed-position equity curve, in SOL. */
   maxDrawdownSol: number;
@@ -384,9 +386,36 @@ export function analyze(
   const averageLossPercent =
     lossReturns.length > 0 ? Math.abs(lossReturns.reduce((a, b) => a + b, 0) / lossReturns.length) : null;
 
-  // expectancy = win_rate * avg_win% - loss_rate * avg_loss%, rates as fractions.
+  /**
+   * expectancy = win_rate * avg_win% - loss_rate * avg_loss%, rates as fractions.
+   *
+   * `?? 0` USED TO BE HERE ON BOTH AVERAGES, and it was the fleet's recurring
+   * defect in miniature: a null average means "there were trades of this kind
+   * but none had a readable return", and treating that as 0% produced a
+   * confident expectancy figure from data that does not exist. A run whose wins
+   * all had unreadable returns would report a NEGATIVE expectancy - loss side
+   * intact, win side silently zeroed - and nothing in the output would say so.
+   *
+   * A zero average is only legitimate when the corresponding RATE is zero: no
+   * wins at all really does contribute nothing. So each side is checked against
+   * its own rate, and the expectancy is null - not a number - whenever a
+   * contributing side is unknown.
+   */
   let expectancyPercent: number | null = null;
-  if (winRatePercent !== null && lossRatePercent !== null) {
+  let expectancyUnavailableReason: string | null = null;
+  if (winRatePercent === null || lossRatePercent === null) {
+    expectancyUnavailableReason = "win/loss rates unavailable - no closed positions to compute them from";
+  } else if (winRatePercent > 0 && averageWinPercent === null) {
+    expectancyUnavailableReason =
+      `${wins.length} winning position(s) exist but none has a readable return %, so the win side ` +
+      `of expectancy cannot be computed. Reported as unknown rather than as zero, which would ` +
+      `understate expectancy and look measured.`;
+  } else if (lossRatePercent > 0 && averageLossPercent === null) {
+    expectancyUnavailableReason =
+      `${losses.length} losing position(s) exist but none has a readable return %, so the loss side ` +
+      `of expectancy cannot be computed. Reported as unknown rather than as zero, which would ` +
+      `overstate expectancy.`;
+  } else {
     const w = (winRatePercent / 100) * (averageWinPercent ?? 0);
     const l = (lossRatePercent / 100) * (averageLossPercent ?? 0);
     expectancyPercent = w - l;
@@ -468,6 +497,7 @@ export function analyze(
     averageWinPercent,
     averageLossPercent,
     expectancyPercent,
+    expectancyUnavailableReason,
     totalPnlSol: closed.reduce((a, p) => a + p.totalPnlSol, 0),
     maxDrawdownSol: drawdown.sol,
     maxDrawdownPercent: drawdown.percent,
