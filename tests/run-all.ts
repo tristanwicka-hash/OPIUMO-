@@ -39,7 +39,12 @@ function runSuite(
   env: NodeJS.ProcessEnv
 ): Promise<{ status: number | null; output: string }> {
   return new Promise((resolve) => {
-    const child = spawn("npx", ["ts-node", script], {
+    // --transpile-only skips per-suite typechecking, which costs ~9s a suite
+    // and is redundant when `npm run typecheck` covers the whole repo in one
+    // pass. Used only when FAST_TESTS=1 asks for it; a plain `npm test` still
+    // typechecks every suite as it always did.
+    const args = process.env.FAST_TESTS === "1" ? ["ts-node", "--transpile-only", script] : ["ts-node", script];
+    const child = spawn("npx", args, {
       stdio: ["inherit", "pipe", "pipe"],
       env,
     });
@@ -105,6 +110,21 @@ const suites = [
  */
 const NETWORK_SUITES = suites.filter((s) => s.needsNetwork).map((s) => s.name);
 
+/**
+ * Set SKIP_NETWORK_SUITES=1 to run only the offline suites.
+ *
+ * Exists for the pre-commit hook. The four network suites take ~36 seconds
+ * between them and can only ever verify that they fail gracefully in a sandbox
+ * with no egress, so paying that on every commit buys nothing and is exactly
+ * the cost that makes a hook get bypassed. They still run in a full `npm test`.
+ *
+ * Skipped suites are LISTED by name in the output. A run that quietly covered
+ * less than it appeared to is the failure mode this whole runner was rewritten
+ * to avoid.
+ */
+const SKIP_NETWORK = process.env.SKIP_NETWORK_SUITES === "1";
+const suitesToRun = SKIP_NETWORK ? suites.filter((s) => !s.needsNetwork) : suites;
+
 type Outcome = "pass" | "fail" | "skip";
 interface SuiteResult {
   name: string;
@@ -123,8 +143,78 @@ const skipReportFile = path.join(
   "skip-reason.txt"
 );
 
+/**
+ * How many suites run at once. Default 1 - the sequential behaviour every
+ * previous run had, and the one whose interleaved output is readable.
+ *
+ * Offline suites are independent: each writes only into its own
+ * logs/test-<name>/ scratch directory, which is what makes this safe. A suite
+ * that started writing to a shared path would break that and is caught by the
+ * fixture-leak guard.
+ */
+const CONCURRENCY = Math.max(1, Number(process.env.TEST_CONCURRENCY ?? "1") || 1);
+
+async function runOne(suite: (typeof suites)[number]): Promise<SuiteResult> {
+  // Each parallel suite needs its own skip-report file, or two suites skipping
+  // at once would overwrite each other's reason and one would be misattributed.
+  const skipFile = path.join(
+    fs.mkdtempSync(path.join(os.tmpdir(), "opiumo-test-")),
+    "skip-reason.txt"
+  );
+  const { status, output } = await runSuite(suite.script, { ...process.env, [SKIP_REPORT_ENV]: skipFile });
+
+  let outcome: Outcome;
+  let reason: string | undefined;
+  if (status === EXIT_PASS) {
+    outcome = "pass";
+  } else if (status === EXIT_SKIP) {
+    outcome = "skip";
+    reason = fs.existsSync(skipFile)
+      ? fs.readFileSync(skipFile, "utf-8").trim()
+      : "(the suite exited 2 but recorded no reason - see its output above)";
+  } else {
+    outcome = "fail";
+  }
+  return {
+    name: suite.name,
+    outcome,
+    status,
+    reason,
+    needsNetwork: !!suite.needsNetwork,
+    totals: parseTotals(output),
+  };
+}
+
+/** Runs the suites through a bounded worker pool, preserving report order. */
+async function runInParallel(): Promise<void> {
+  const ordered: (SuiteResult | null)[] = suitesToRun.map(() => null);
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= suitesToRun.length) return;
+      ordered[i] = await runOne(suitesToRun[i]);
+      const r = ordered[i]!;
+      console.log(`  ${r.outcome.toUpperCase().padEnd(4)} ${r.name}`);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, suitesToRun.length) }, worker));
+  for (const r of ordered) if (r) results.push(r);
+}
+
 async function main() {
-  for (const suite of suites) {
+  if (SKIP_NETWORK) {
+    console.log(
+      `SKIP_NETWORK_SUITES=1 - running ${suitesToRun.length} of ${suites.length} suites. ` +
+        `NOT run: ${NETWORK_SUITES.join(", ")}`
+    );
+  }
+  if (CONCURRENCY > 1) {
+    console.log(`TEST_CONCURRENCY=${CONCURRENCY} - suites run in parallel, so their output interleaves.`);
+    await runInParallel();
+    return finish();
+  }
+  for (const suite of suitesToRun) {
     console.log(`\n${"=".repeat(70)}`);
     console.log(`Running: ${suite.name}`);
     console.log("=".repeat(70));
@@ -166,6 +256,10 @@ async function main() {
     });
   }
 
+  return finish();
+}
+
+function finish(): void {
   const passed = results.filter((r) => r.outcome === "pass");
   const failed = results.filter((r) => r.outcome === "fail");
   const skipped = results.filter((r) => r.outcome === "skip");
