@@ -360,27 +360,58 @@ async function main() {
   console.log(`\nOffline checks: ${pass} passed, ${fail} failed`);
 
   console.log("\n-- live subscription smoke test --");
-  try {
-    const watcher = new PoolWatcher(getConnection());
-    let liveOk = false;
-    watcher.on("newPool", () => {
-      liveOk = true;
-    });
-    watcher.start();
-    // We don't wait for an actual event (could be minutes) - just prove the
-    // websocket subscription itself doesn't immediately blow up.
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-    await watcher.stop();
-    console.log("PASS: subscription started and stopped without error");
-    console.log(`  (no event required for this smoke test; liveOk=${liveOk})`);
-  } catch (err: any) {
-    console.error("FAIL (expected in a sandbox with no Solana RPC egress):", err?.message || err);
-    console.error(
-      "  Re-run this test on a machine with real websocket access to your RPC provider " +
-        "before trusting Part 2 end-to-end."
-    );
+  /**
+   * This section opens a REAL websocket to the configured RPC and starts the
+   * RPC meter. Two things went wrong with it on 2026-09-11 and both are fixed
+   * here:
+   *
+   *  1. It ran inside the pre-commit hook. SKIP_NETWORK_SUITES=1 excludes the
+   *     suites marked `needsNetwork` in run-all.ts, but this suite is offline
+   *     for its first 29 checks and was never marked - so the hook opened a
+   *     live websocket on every commit. It now skips this section under that
+   *     flag and says so.
+   *  2. It could hang forever. `watcher.stop()` awaits
+   *     `removeOnLogsListener`, and when the websocket is half-open that
+   *     unsubscribe never gets a response. The hook sat 23 minutes on it - long
+   *     enough for the meter's 10-minute timer to write this TEST process into
+   *     logs/rpc-meter.jsonl as if it were the bot. A hard 15-second cap now
+   *     turns a stuck stop into a reported failure and the process exits.
+   */
+  if (process.env.SKIP_NETWORK_SUITES === "1") {
+    console.log("SKIPPED: live websocket smoke test - SKIP_NETWORK_SUITES=1 (offline checks above still count)");
+  } else {
+    const LIVE_CAP_MS = 15_000;
+    const capped = <T>(p: Promise<T>, label: string): Promise<T> =>
+      new Promise<T>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error(`${label} did not complete within ${LIVE_CAP_MS / 1000}s`)), LIVE_CAP_MS);
+        p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
+      });
+    try {
+      const watcher = new PoolWatcher(getConnection());
+      let liveOk = false;
+      watcher.on("newPool", () => {
+        liveOk = true;
+      });
+      watcher.start();
+      // We don't wait for an actual event (could be minutes) - just prove the
+      // websocket subscription itself doesn't immediately blow up.
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      await capped(watcher.stop(), "watcher.stop()");
+      console.log("PASS: subscription started and stopped without error");
+      console.log(`  (no event required for this smoke test; liveOk=${liveOk})`);
+    } catch (err: any) {
+      console.error("FAIL (expected in a sandbox with no Solana RPC egress):", err?.message || err);
+      console.error(
+        "  Re-run this test on a machine with real websocket access to your RPC provider " +
+          "before trusting Part 2 end-to-end."
+      );
+    }
   }
 
+  // The runner and the pre-commit hook read this line; without it a suite counts
+  // as "did not run to completion" (which is how this file was reported until now).
+  console.log(`\nTotal: ${pass} passed, ${fail} failed`);
+  // Exit explicitly: a lingering websocket or meter timer must not keep this alive.
   process.exit(fail > 0 ? 1 : 0);
 }
 
