@@ -62,7 +62,9 @@
     "test:replay": "ts-node tests/test-replay.ts",
     "backtest:trailing-v2": "ts-node scripts/backtest-trailing-v2.ts",
     "report:shadow": "ts-node scripts/shadow-report.ts",
-    "test:shadow-report": "ts-node tests/test-shadow-report.ts"
+    "test:shadow-report": "ts-node tests/test-shadow-report.ts",
+    "check:logs": "ts-node scripts/check-logs.ts",
+    "test:log-integrity": "ts-node tests/test-log-integrity.ts"
   },
   "dependencies": {
     "@drift-labs/sdk": "^2.156.0",
