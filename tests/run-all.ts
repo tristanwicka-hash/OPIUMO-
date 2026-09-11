@@ -92,6 +92,7 @@ const suites = [
   { name: "Paper execution + shadow filters (offline)", script: "tests/test-paper-execution.ts" },
   { name: "Holder data routing (offline)", script: "tests/test-holder-data.ts" },
   { name: "Credit circuit breaker (offline)", script: "tests/test-credit-budget.ts" },
+  { name: "Replay harness (offline)", script: "tests/test-replay.ts" },
   { name: "Fixture-leak guard (offline)", script: "tests/test-no-production-writes.ts" },
   { name: "Run-summary arithmetic (offline)", script: "tests/test-summary.ts" },
 ];

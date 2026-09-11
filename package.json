@@ -57,7 +57,9 @@
     "test:paper-exec": "ts-node tests/test-paper-execution.ts",
     "test:holder": "ts-node tests/test-holder-data.ts",
     "test:leak-guard": "ts-node tests/test-no-production-writes.ts",
-    "test:credit-budget": "ts-node tests/test-credit-budget.ts"
+    "test:credit-budget": "ts-node tests/test-credit-budget.ts",
+    "replay": "ts-node scripts/replay.ts",
+    "test:replay": "ts-node tests/test-replay.ts"
   },
   "dependencies": {
     "@drift-labs/sdk": "^2.156.0",
