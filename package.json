@@ -59,7 +59,8 @@
     "test:leak-guard": "ts-node tests/test-no-production-writes.ts",
     "test:credit-budget": "ts-node tests/test-credit-budget.ts",
     "replay": "ts-node scripts/replay.ts",
-    "test:replay": "ts-node tests/test-replay.ts"
+    "test:replay": "ts-node tests/test-replay.ts",
+    "backtest:trailing-v2": "ts-node scripts/backtest-trailing-v2.ts"
   },
   "dependencies": {
     "@drift-labs/sdk": "^2.156.0",
