@@ -111,6 +111,11 @@
     "allowDas": false,
     "dasAgeThresholdMs": 120000
   },
+  "rugChecks": {
+    "_comment": "Rug checks 3 and 4 (src/data/rugChecks.ts). LP burn status is read for Raydium pools from the LP mint supply; Pump.fun tokens are recorded not-applicable, never safe. Bundle detection fetches the launch slot's transactions on the pool (1 getSignaturesForAddress + 1 getTransaction per launch-slot signature) and counts distinct buyer wallets other than the creator. It runs ONLY for tokens that passed every cheap check - the same gate as the holder call - and bundleCreditsSpent is recorded on every token so the cost is measured. maxLaunchSlotSignatures bounds the fetch; if the launch slot lies beyond that window the result is unknown, not a floor. Neither metric feeds a filter yet: no threshold exists for them (recorded, not enforced). Measured live 2026-09-11: 1 credit when the launch slot is clean, 1+N when it is not.",
+    "bundleDetection": true,
+    "maxLaunchSlotSignatures": 25
+  },
   "paperExecution": {
     "_comment": "MEASUREMENT ONLY - records what a position WOULD have done. There is no order path: no wallet, no signing, no transaction building. trading.enabled is irrelevant here because there is nothing to enable. Costs ZERO additional RPC calls: entry uses liquiditySol the metrics path already fetched, and tracking consumes liquidity readings the watchlist already takes. A dedicated poll loop would have cost 720-1,200 calls/h. poolFraction is the share of the pool a paper position represents and drives the slippage model - entry is priced at REALIZABLE PROCEEDS, never the headline value, so a paper fill cannot manufacture profits that could not exist. includeRejected: true opens positions for tokens the LIVE filters rejected as well as passed - that comparison is the whole point, because a 0% pass rate is unreadable until you know what the rejects did. maxOpenPositions is a hard cap and every refusal is RECORDED with its reason rather than applied silently.",
     "enabled": true,

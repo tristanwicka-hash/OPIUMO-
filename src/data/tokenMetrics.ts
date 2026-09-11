@@ -1,4 +1,5 @@
 import { Connection, PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
+import { readLpStatus, detectBundle, LpBurnStatus, DEFAULT_MAX_LAUNCH_SLOT_SIGNATURES } from "./rugChecks";
 import { unpackMint, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, getExtensionTypes, ExtensionType } from "@solana/spl-token";
 import { loadConfig, PollingConfig, FiltersConfig } from "../config";
 import { evaluateStage1Reasons } from "../filters/engine";
@@ -66,6 +67,17 @@ export interface TokenMetrics {
   creatorLpPercent: number | null;
   /** True only for Raydium pools - tells the filter engine whether creatorLpPercent should be evaluated at all. */
   lpCheckApplicable: boolean;
+  /**
+   * Rug checks 3 and 4 (src/data/rugChecks.ts). Every field is null when not
+   * read; `lpBurnStatus` / `bundleSource` say WHY. "not-applicable" and
+   * "skipped-cheap-fail" are recorded as such - never as safe.
+   */
+  lpBurnStatus?: LpBurnStatus;
+  lpBurned?: boolean | null;
+  launchSlotBuyers?: number | null;
+  launchSlotTxs?: number | null;
+  bundleSource?: "fetched" | "unknown" | "not-fetched" | "skipped-cheap-fail" | "disabled";
+  bundleCreditsSpent?: number;
 
   /** True if collecting these metrics took longer than polling.metricsMaxAgeMs - treat with suspicion, the token's on-chain state may have moved since. */
   stale: boolean;
@@ -431,6 +443,22 @@ export async function collectTokenMetrics(
   let devWalletPercent: number | null = null;
   let holderSource: string = "not-fetched";
   let holderCredits = 0;
+  // Rug checks (src/data/rugChecks.ts). Optional in config so an older file still runs.
+  const rugRaw = (config as unknown as Record<string, any>).rugChecks ?? {};
+  const rugCfg = {
+    bundleDetection: rugRaw.bundleDetection !== false,
+    maxLaunchSlotSignatures: typeof rugRaw.maxLaunchSlotSignatures === "number" ? rugRaw.maxLaunchSlotSignatures : DEFAULT_MAX_LAUNCH_SLOT_SIGNATURES,
+  };
+  let launchSlotBuyers: number | null = null;
+  let launchSlotTxs: number | null = null;
+  let bundleSource: "fetched" | "unknown" | "not-fetched" | "skipped-cheap-fail" | "disabled" = "skipped-cheap-fail";
+  let bundleCredits = 0;
+  // Rug check 3 - LP burn. Free for Pump.fun (not applicable, recorded as such);
+  // one getAccountInfo on the LP mint for Raydium.
+  const lp = await readLpStatus(connection, event);
+  const lpBurnStatus: LpBurnStatus = lp.status;
+  const lpBurned: boolean | null = lp.lpBurned;
+  if (lp.status === "unknown") warnings.push(`lp: ${lp.note}`);
 
   {
     // Only the fields the cheap stage-1 rules read. Holder fields are null
@@ -494,6 +522,19 @@ export async function collectTokenMetrics(
       } catch (err: any) {
         warnings.push(`holderData: ${err?.message || err}`);
         holderSource = "error";
+      }
+      // Rug check 4 - bundle detection. Same gate as the holder call: only a
+      // token that passed every cheap check pays for it. Cost is recorded.
+      if (rugCfg.bundleDetection) {
+        const bundle = await timeout(detectBundle(connection, event, { maxSignatures: rugCfg.maxLaunchSlotSignatures }), "bundle detection")
+          .catch((err: any) => ({ launchSlotBuyers: null, launchSlotTxs: null, windowExceeded: false, source: "unknown" as const, creditsSpent: 0, note: `bundle detection: ${err?.message || err}` }));
+        launchSlotBuyers = bundle.launchSlotBuyers;
+        launchSlotTxs = bundle.launchSlotTxs;
+        bundleSource = bundle.source;
+        bundleCredits = bundle.creditsSpent;
+        if (bundle.source !== "fetched") warnings.push(`bundle: ${bundle.note}`);
+      } else {
+        bundleSource = "disabled";
       }
     }
   }
@@ -571,6 +612,12 @@ export async function collectTokenMetrics(
     riskyTokenExtensions,
     holderSource,
     holderCreditsSpent: holderCredits,
+    lpBurnStatus,
+    lpBurned,
+    launchSlotBuyers,
+    launchSlotTxs,
+    bundleSource,
+    bundleCreditsSpent: bundleCredits,
     creatorLpPercent,
     lpCheckApplicable,
     uniqueWallets,

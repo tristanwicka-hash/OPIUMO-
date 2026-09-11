@@ -68,7 +68,10 @@
     "backtest:sizing": "ts-node scripts/backtest-sizing.ts",
     "test:sizing-backtest": "ts-node tests/test-sizing-backtest.ts",
     "report:metric-value": "ts-node scripts/metric-value.ts",
-    "test:metric-value": "ts-node tests/test-metric-value.ts"
+    "test:metric-value": "ts-node tests/test-metric-value.ts",
+    "report:rug-split": "ts-node scripts/rug-split.ts",
+    "measure:bundle": "ts-node scripts/measure-bundle-cost.ts",
+    "test:rug-checks": "ts-node tests/test-rug-checks.ts"
   },
   "dependencies": {
     "@drift-labs/sdk": "^2.156.0",
