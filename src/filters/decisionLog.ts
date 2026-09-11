@@ -102,6 +102,43 @@ export class DecisionLog {
    * This token was never evaluated, and conflating the two would corrupt the
    * pass-rate denominator.
    */
+  /**
+   * A token that was not evaluated because the credit breaker had halted
+   * detection.
+   *
+   * Deliberately its own event and its own reason string rather than being
+   * folded into outside-schedule. Both produce NOT_EVALUATED, but "the window
+   * was shut" and "the plan ran out of credits" are different facts, and only
+   * one of them needs someone to do something. A shared reason would have made
+   * the second invisible inside the first.
+   */
+  recordCreditHalt(params: {
+    mint: string;
+    signature: string;
+    source: string;
+    detectedAt: string;
+    reason: string;
+    detail: string;
+    resumesAt: string | null;
+    dayCredits: number;
+    monthCredits: number;
+  }): void {
+    this.logger.warn(`NOT EVALUATED ${params.mint} (${params.source}) - ${params.detail}`);
+    this.jsonl.append({
+      event: "credit-halt",
+      decision: "NOT_EVALUATED",
+      mint: params.mint,
+      signature: params.signature,
+      source: params.source,
+      detectedAt: params.detectedAt,
+      budgetReason: params.reason,
+      detail: params.detail,
+      resumesAt: params.resumesAt,
+      dayCredits: params.dayCredits,
+      monthCredits: params.monthCredits,
+    });
+  }
+
   recordOutsideSchedule(params: {
     mint: string;
     signature: string;

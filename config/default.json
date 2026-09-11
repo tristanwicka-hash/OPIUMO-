@@ -89,9 +89,22 @@
     "enabled": true,
     "timezone": "UTC",
     "activeWindows": [
-      { "days": "all", "start": "12:00", "end": "07:00" }
+      {
+        "days": "all",
+        "start": "12:00",
+        "end": "07:00"
+      }
     ],
     "outsideWindow": "idle"
+  },
+  "creditBudget": {
+    "_comment": "Credit circuit breaker. The meter measures burn; this is what acts on it. Tristan ran out of Helius credits once with no warning, and nothing prevented a repeat. Budgets are in CREDITS, not calls - DAS methods bill at 10 credits each, so a call-based budget would have been 15% wrong the moment one went live. Defaults are derived from the 10M/month Developer plan with 10% headroom (9M/month), and the daily figure is that spread over the longest month. Measured burn on 2026-09-11 was 9,891 credits/h = ~237k/day, so 290k/day sits above the observed rate - it is a ceiling, not a target. There is deliberately NO unlimited setting: a zero, negative, missing or infinite budget is rejected at startup. Turn it off explicitly with enabled:false instead. At the limit, detection STOPS and every skipped token is recorded as \"credit-halt\" with decision NOT_EVALUATED - same precedent as outside-schedule, so a halt and a quiet night never look the same in the logs.",
+    "enabled": true,
+    "dailyCredits": 290000,
+    "monthlyCredits": 9000000,
+    "_warnFractionComment": "Warn loudly once either budget passes this fraction. Detection continues; the warning says it will stop at the limit.",
+    "warnFraction": 0.8,
+    "ledgerFile": "logs/credit-ledger.json"
   },
   "holderData": {
     "_comment": "How topHolderPercent and devWalletPercent are fetched. DIAGNOSED 2026-09-10 from evidence, and the stated cause was wrong: getTokenLargestAccounts DOES support Token-2022 (it succeeds on the very same mints once they are ~2 minutes old). It fails at DETECTION time because the largest-accounts INDEX has not been built yet - in the decision log the metric succeeded at a median detection-to-decision latency of 161,508ms and failed at 204ms, an 800x split, while getAccountInfo on the same mint succeeded 98% of the time. Raced head to head on 6 fresh mints at 30ms-2.5s: getTokenLargestAccounts failed 6/6, DAS getTokenAccounts succeeded 6/6. So routing is by AGE, not by token program - a legacy mint at 200ms would hit the same unbuilt index. DAS costs 10 credits against 1 (confirmed on Helius's pricing page), so it is used ONLY for tokens young enough that the cheap call would fail AND only after every cheap filter has already passed - measured, that is ~11% of tokens. One DAS call serves BOTH metrics because the response carries owner and amount per account, so it is 10 credits per surviving token, not 20. Measured added cost: ~1,323 credits/hour. DISABLED 2026-09-10 after MEASUREMENT: predicted 1,323 credits/h, measured 2,790/h over 20 minutes, which exceeds the 2,000/h gate. The code stays in place and tested; allowDas is the switch. See APPROVALS item 16 - this needs Tristan's decision, not a quiet re-enable.",
@@ -118,9 +131,32 @@
     "enabled": true,
     "logFile": "logs/shadow-filters.jsonl",
     "sets": [
-      { "id": "half-liquidity", "rationale": "half the live liquidity floor - is the floor the binding constraint?", "overrides": { "minLiquiditySol": 2.5 } },
-      { "id": "no-activity-floor", "rationale": "drop the wallet/transaction floors - a token seconds old structurally cannot have them", "overrides": { "minUniqueWallets": 0, "minTransactionCount": 0 } },
-      { "id": "liquidity-only", "rationale": "liquidity alone, everything else off - the loosest defensible set", "overrides": { "minLiquiditySol": 1, "minUniqueWallets": 0, "minTransactionCount": 0, "maxTopHolderPercent": 100, "maxDevWalletPercent": 100 } }
+      {
+        "id": "half-liquidity",
+        "rationale": "half the live liquidity floor - is the floor the binding constraint?",
+        "overrides": {
+          "minLiquiditySol": 2.5
+        }
+      },
+      {
+        "id": "no-activity-floor",
+        "rationale": "drop the wallet/transaction floors - a token seconds old structurally cannot have them",
+        "overrides": {
+          "minUniqueWallets": 0,
+          "minTransactionCount": 0
+        }
+      },
+      {
+        "id": "liquidity-only",
+        "rationale": "liquidity alone, everything else off - the loosest defensible set",
+        "overrides": {
+          "minLiquiditySol": 1,
+          "minUniqueWallets": 0,
+          "minTransactionCount": 0,
+          "maxTopHolderPercent": 100,
+          "maxDevWalletPercent": 100
+        }
+      }
     ]
   },
   "logging": {

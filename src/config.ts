@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import dotenv from "dotenv";
 import { ScheduleConfig, DEFAULT_SCHEDULE, validateSchedule } from "./schedule/scheduler";
+import { CreditBudgetConfig, DEFAULT_CREDIT_BUDGET, validateCreditBudget } from "./rpc/creditBudget";
 
 /**
  * Re-exported so callers can reach the schedule types from ./config like every
@@ -10,6 +11,7 @@ import { ScheduleConfig, DEFAULT_SCHEDULE, validateSchedule } from "./schedule/s
  * behaves exactly as it did before the scheduler existed.
  */
 export type { ScheduleConfig, ScheduleWindow } from "./schedule/scheduler";
+export type { CreditBudgetConfig } from "./rpc/creditBudget";
 
 dotenv.config();
 
@@ -313,6 +315,7 @@ export interface AppConfig {
   watchlist: WatchlistConfig;
   logging: LoggingConfig;
   schedule: ScheduleConfig;
+  creditBudget: CreditBudgetConfig;
   paperExecution: PaperExecutionConfig;
   shadowFilters: ShadowFiltersConfig;
   perps: PerpsConfig;
@@ -357,6 +360,12 @@ function loadJsonConfig(): Omit<AppConfig, "rpcUrl" | "wsUrl" | "walletPrivateKe
   // restating timezone and outsideWindow.
   stripped.schedule = { ...DEFAULT_SCHEDULE, ...(stripped.schedule ?? {}) };
 
+  // Optional for the same reason the schedule block is: a config written
+  // before the breaker existed still loads. Absent means the DEFAULTS, which
+  // are ON - unlike the schedule, whose default is off. A breaker that
+  // defaulted to absent would leave exactly the gap it was built to close.
+  stripped.creditBudget = { ...DEFAULT_CREDIT_BUDGET, ...(stripped.creditBudget ?? {}) };
+
   return stripped;
 }
 
@@ -368,6 +377,7 @@ function validate(config: AppConfig): void {
   // mistake to list alongside others, it is a schedule nobody can reason
   // about, and the message names the exact window.
   validateSchedule(config.schedule);
+  validateCreditBudget(config.creditBudget);
 
   /**
    * A filter threshold that no token can reach is a bug, not a strict setting.

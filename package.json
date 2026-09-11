@@ -56,7 +56,8 @@
     "test:backlog": "ts-node tests/test-outcome-backlog.ts",
     "test:paper-exec": "ts-node tests/test-paper-execution.ts",
     "test:holder": "ts-node tests/test-holder-data.ts",
-    "test:leak-guard": "ts-node tests/test-no-production-writes.ts"
+    "test:leak-guard": "ts-node tests/test-no-production-writes.ts",
+    "test:credit-budget": "ts-node tests/test-credit-budget.ts"
   },
   "dependencies": {
     "@drift-labs/sdk": "^2.156.0",

@@ -12,6 +12,8 @@ import { DelayProbe } from "./data/delayProbe";
 import { OutcomeTracker } from "./data/outcomeTracker";
 import { Watchlist } from "./watchlist/watchlist";
 import { evaluateSchedule, weeklyOpenHours } from "./schedule/scheduler";
+import { CreditBreaker } from "./rpc/creditBudget";
+import { getRpcMeter } from "./rpc/connection";
 import { PaperBook, summarise } from "./trading/paperExecution";
 import { constantProductProceeds } from "./trading/trailingStop";
 import { evaluateShadows, ShadowSet } from "./filters/shadowFilters";
@@ -295,13 +297,61 @@ async function main() {
   }
   let notEvaluated = 0;
 
+  // The credit circuit breaker. Constructed here so a bad budget fails at
+  // startup rather than at the moment it would have saved the plan.
+  const breaker = new CreditBreaker(config.creditBudget);
+  let creditHalted = 0;
+  if (config.creditBudget.enabled) {
+    const opening = breaker.decide(new Date());
+    logger.warn(
+      `*** CREDIT BREAKER IS ON *** budget ${config.creditBudget.dailyCredits.toLocaleString()} credits/day, ` +
+        `${config.creditBudget.monthlyCredits.toLocaleString()}/month, warning at ` +
+        `${Math.round(config.creditBudget.warnFraction * 100)}%. At the limit detection STOPS and every ` +
+        `skipped token is recorded to ${config.logging.decisionsFile} as "credit-halt" - so a halt and a ` +
+        `quiet night never look the same. Resuming from ${config.creditBudget.ledgerFile}: ${opening.detail}`
+    );
+  } else {
+    logger.warn(
+      "*** CREDIT BREAKER IS OFF *** nothing will stop an overrun. This is how the plan was emptied once already."
+    );
+  }
+
   watcher.on("newPool", (event: NewPoolEvent) => {
     detected++;
+
+    const now = new Date();
+
+    // The credit gate, ahead of the schedule gate and ahead of anything that
+    // spends. It charges nothing itself: it reads the meter's own lifetime
+    // credit counter and books the delta, so the two can never drift and no
+    // call is priced twice.
+    const meterSnapshot = getRpcMeter()?.snapshot(Date.now());
+    if (meterSnapshot) breaker.chargeFromMeter(meterSnapshot.credits, now);
+    const budget = breaker.decide(now);
+    breaker.persistThrottled(Date.now());
+    if (!budget.allowed) {
+      creditHalted++;
+      notEvaluated++;
+      decisionLog.recordCreditHalt({
+        mint: event.mint,
+        signature: event.signature,
+        source: event.source,
+        detectedAt: event.detectedAt,
+        reason: budget.reason,
+        detail: budget.detail,
+        resumesAt: budget.resumesAt,
+        dayCredits: budget.dayCredits,
+        monthCredits: budget.monthCredits,
+      });
+      // Same reasoning as the schedule gate below: the delay probe and outcome
+      // tracker both spend, so a halt has to stop them too or it is not a halt.
+      return;
+    }
 
     // The gate. Checked per detection rather than on a timer so the window
     // boundary is exact, and evaluated BEFORE anything that costs an RPC call -
     // metrics collection is the ~110-call step this exists to avoid paying for.
-    const verdict = evaluateSchedule(schedule, new Date());
+    const verdict = evaluateSchedule(schedule, now);
     if (!verdict.active) {
       notEvaluated++;
       decisionLog.recordOutsideSchedule({
@@ -400,11 +450,23 @@ async function main() {
       running: s.running,
     });
     const accounted = decided + dropped + notEvaluated + s.queued;
+    // notEvaluated is split by cause. Rolling a credit halt into "outside
+    // schedule" would hide the one of the two that needs someone to act.
     logger.info(
       `Final tally: detected=${detected} decided=${decided} dropped=${dropped} ` +
-        `notEvaluated=${notEvaluated} (outside schedule) stillQueued=${s.queued}. ` +
+        `notEvaluated=${notEvaluated} (${notEvaluated - creditHalted} outside schedule, ` +
+        `${creditHalted} credit-halted) stillQueued=${s.queued}. ` +
         `These are also in the decision log (event="queue-stats") so the run can be reconciled later.`
     );
+    // The last word on spend, written before anything else can fail.
+    breaker.persist();
+    logger.info(`Credit ledger: ${breaker.decide(new Date()).detail}`);
+    if (creditHalted > 0) {
+      logger.warn(
+        `*** ${creditHalted} token(s) went unevaluated because the credit breaker had HALTED detection. ` +
+          `That is a budget event, not a quiet market - see event="credit-halt" in ${config.logging.decisionsFile}. ***`
+      );
+    }
     if (accounted !== detected) {
       // Says so rather than printing a tally that quietly does not add up.
       logger.warn(
