@@ -46,6 +46,8 @@ export interface SavingsReport {
   adjacentHours: number[];
   /** offRate / onRate. Null when either is unmeasured. 0 would mean OFF is free. */
   offAsFractionOfOn: number | null;
+  /** Which ON figure offAsFractionOfOn was measured against. Printed, never implied. */
+  fractionBaseline: "adjacent" | "all-on" | null;
   ready: boolean;
   notReadyReason: string | null;
 }
@@ -118,8 +120,25 @@ export function analyseSavings(
     onHoursCovered: onCovered,
     adjacentOnRate,
     adjacentHours: adjacent,
+    // Measured against the ADJACENT ON hour, not the all-ON average.
+    //
+    // This used the all-ON average, which flattered the result: the OFF block
+    // sits over the quietest hours of the day, so comparing it to a mean that
+    // includes the 16:00-23:00 peak makes an OFF hour look cheaper than it is.
+    // On the first real window that was the difference between "30% of an ON
+    // hour" and 38%. The saving figure below already used the adjacent hour,
+    // so the headline and the saving were quoting two different baselines -
+    // and the headline was the generous one.
+    //
+    // Falls back to the all-ON average only when no adjacent hour is covered,
+    // and the label says which was used.
     offAsFractionOfOn:
-      offRate !== null && onRate !== null && onRate > 0 ? offRate / onRate : null,
+      offRate !== null && adjacentOnRate !== null && adjacentOnRate > 0
+        ? offRate / adjacentOnRate
+        : offRate !== null && onRate !== null && onRate > 0
+        ? offRate / onRate
+        : null,
+    fractionBaseline: adjacentOnRate !== null ? "adjacent" : onRate !== null ? "all-on" : null,
     ready,
     notReadyReason: ready
       ? null
@@ -165,7 +184,10 @@ export function formatSavings(r: SavingsReport, planCalls = 10_000_000): string 
   if (r.offAsFractionOfOn !== null) {
     const pct = r.offAsFractionOfOn * 100;
     lines.push("");
-    lines.push(`  AN OFF HOUR COSTS ${pct.toFixed(0)}% OF AN ON HOUR.`);
+    lines.push(
+      `  AN OFF HOUR COSTS ${pct.toFixed(0)}% OF AN ON HOUR ` +
+        `(measured against the ${r.fractionBaseline === "adjacent" ? "ADJACENT" : "all-on average"} rate).`
+    );
     lines.push(
       pct < 15
         ? "  The schedule is genuinely cutting credits, not just evaluation."

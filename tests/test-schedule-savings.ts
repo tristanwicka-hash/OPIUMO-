@@ -82,6 +82,33 @@ check(
 
 section("the middle case is called out too, not rounded to one of the extremes");
 
+section("the fraction is measured against the ADJACENT hour, not the all-on mean");
+
+// The OFF block deliberately covers the QUIETEST hours of the day, so an all-on
+// average that includes the evening peak makes an OFF hour look cheaper than it
+// is. On the first real window that was 30% versus 38% - and the saving figure
+// below already used the adjacent hour, so the headline and the saving were
+// quoting two different baselines, with the headline being the generous one.
+{
+  // Adjacent ON hours are quiet (6,000); a distant ON hour is busy (20,000).
+  // An OFF hour at 3,000 is 50% of adjacent but only ~23% of the all-on mean.
+  const skewed = analyseSavings(
+    [...win(6, 6000), ...win(12, 6000), ...win(20, 20000), ...win(8, 3000)],
+    OFF
+  );
+  check("it is ready", skewed.ready === true);
+  check("the baseline used is named", skewed.fractionBaseline === "adjacent", String(skewed.fractionBaseline));
+  check(
+    "the fraction is ~50% (vs adjacent), NOT ~23% (vs the all-on mean)",
+    Math.abs((skewed.offAsFractionOfOn as number) - 0.5) < 0.05,
+    `got ${skewed.offAsFractionOfOn}`
+  );
+  const text = formatSavings(skewed);
+  check("the printed line says which baseline it used", text.includes("measured against the ADJACENT rate"));
+  // The saving and the percentage must now agree on their baseline.
+  check("the saving is computed from the same adjacent rate", text.includes("3,000/h x 5 OFF hours"));
+}
+
 const partial = analyseSavings([...win(6, 12000), ...win(8, 3600), ...win(12, 12000)], OFF);
 check("OFF is ~30% of ON", Math.abs((partial.offAsFractionOfOn as number) - 0.3) < 0.05);
 check(
