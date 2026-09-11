@@ -27,6 +27,20 @@ import { loadConfig } from "../src/config";
 
 let pass = 0;
 let fail = 0;
+/**
+ * Reads the suite's own trade log back as parsed records. Parsed, never
+ * grepped: a substring search over the raw file would match the reason text
+ * inside an unrelated event and report a gate that never fired.
+ */
+function readTradeLog(file: string): any[] {
+  if (!fs.existsSync(file)) return [];
+  return fs
+    .readFileSync(file, "utf-8")
+    .split("\n")
+    .filter((l) => l.trim() !== "")
+    .map((l) => JSON.parse(l));
+}
+
 function check(name: string, condition: boolean) {
   if (condition) {
     console.log(`  PASS: ${name}`);
@@ -72,6 +86,30 @@ async function main() {
     const passResult: FilterResult = { mint: event.mint, source: event.source, signature: event.signature, decision: "PASS", reasons: [], metrics: {} as any, evaluatedAt: new Date().toISOString() };
     await engine.onFilterPass(event, passResult);
     check("no position was opened while trading.enabled is false", positions.get(event.mint) === null);
+
+    // The assertion above is necessary but NOT sufficient, and on its own it
+    // passed for the wrong reason. A mutation test proved it: with the gate
+    // changed to `if (false)`, control fell through into the buy path, the
+    // Jupiter quote threw against the `{} as Connection` above, the throw was
+    // caught, and no position opened - so the check stayed green while the
+    // single most important safety gate in this repo was disabled.
+    //
+    // "Nothing happened" is the same observation whether the gate refused the
+    // buy or the buy merely failed. Only the rejected-buy record distinguishes
+    // them, so the gate is now asserted by its own evidence: the reason it
+    // logs. That string cannot be produced by any other path.
+    const rejected = readTradeLog(`${testDir}/trades.jsonl`).filter(
+      (r) => r.event === "rejected-buy" && r.mint === event.mint
+    );
+    check(
+      "the gate logged a rejected-buy for this mint (not merely: nothing happened)",
+      rejected.length === 1
+    );
+    check(
+      "the rejection reason names trading.enabled, so the gate is what refused it",
+      rejected.length === 1 &&
+        rejected[0].reasons.some((r: string) => r.includes("trading.enabled is false"))
+    );
   }
 
   console.log("\n-- a non-PASS filter result is refused, even if trading were enabled --");
