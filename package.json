@@ -64,7 +64,11 @@
     "report:shadow": "ts-node scripts/shadow-report.ts",
     "test:shadow-report": "ts-node tests/test-shadow-report.ts",
     "check:logs": "ts-node scripts/check-logs.ts",
-    "test:log-integrity": "ts-node tests/test-log-integrity.ts"
+    "test:log-integrity": "ts-node tests/test-log-integrity.ts",
+    "backtest:sizing": "ts-node scripts/backtest-sizing.ts",
+    "test:sizing-backtest": "ts-node tests/test-sizing-backtest.ts",
+    "report:metric-value": "ts-node scripts/metric-value.ts",
+    "test:metric-value": "ts-node tests/test-metric-value.ts"
   },
   "dependencies": {
     "@drift-labs/sdk": "^2.156.0",
