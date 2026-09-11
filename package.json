@@ -71,7 +71,12 @@
     "test:metric-value": "ts-node tests/test-metric-value.ts",
     "report:rug-split": "ts-node scripts/rug-split.ts",
     "measure:bundle": "ts-node scripts/measure-bundle-cost.ts",
-    "test:rug-checks": "ts-node tests/test-rug-checks.ts"
+    "test:rug-checks": "ts-node tests/test-rug-checks.ts",
+    "graph:render": "ts-node scripts/graph-render.ts",
+    "test:graph": "ts-node tests/test-graph.ts",
+    "test:eval-goldens": "ts-node tests/test-eval-goldens.ts",
+    "test:pipeline-graph": "ts-node tests/test-pipeline-graph.ts",
+    "test:graph-docs": "ts-node tests/test-graph-docs.ts"
   },
   "dependencies": {
     "@drift-labs/sdk": "^2.156.0",

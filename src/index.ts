@@ -18,6 +18,8 @@ import { PaperBook, summarise } from "./trading/paperExecution";
 import { constantProductProceeds } from "./trading/trailingStop";
 import { evaluateShadows, ShadowSet } from "./filters/shadowFilters";
 import { JsonlLog } from "./util/logger";
+import { runGraph } from "./graph/graph";
+import { buildDetectionGraph, buildWorkerGraph, Counters } from "./graph/pipelineGraph";
 
 const logger = new Logger("main", loadConfig().logging.level);
 
@@ -181,100 +183,47 @@ async function main() {
   // `notEvaluated` joined this identity when the scheduler did. Leaving it out
   // would have made every scheduled run appear to lose tokens, which is exactly
   // the kind of quiet discrepancy that gets explained away rather than chased.
-  let detected = 0;
-  let decided = 0;
-  let dropped = 0;
+  const counters: Counters = { detected: 0, decided: 0, dropped: 0, notEvaluated: 0, creditHalted: 0 };
 
+  /**
+   * The routing that used to live in this handler and in the worker below is
+   * declared in src/graph/pipelineGraph.ts as two graphs. This file builds the
+   * dependencies and runs them; every node body there is the code that was here.
+   */
+  let evicted: { event: NewPoolEvent; queuedAt: number } | null = null;
   const queue = new WorkQueue<{ event: NewPoolEvent; queuedAt: number }>({
     maxConcurrent: config.polling.maxConcurrentTokens,
     maxQueued: config.polling.maxQueuedTokens,
-    onDrop: ({ event, queuedAt }, queueLength) => {
-      dropped++;
-      // Recorded to the decision log, not just stdout: a dropped token that
-      // leaves no trace would bias every later PASS/SKIP analysis toward the
-      // tokens that happened to survive the queue.
-      decisionLog.recordDropped({
-        mint: event.mint,
-        signature: event.signature,
-        source: event.source,
-        detectedAt: event.detectedAt,
-        queueWaitMs: Date.now() - queuedAt,
-      });
-      logger.warn(
-        `Queue full (${config.polling.maxQueuedTokens}) - dropped OLDEST pending token ${event.mint} ` +
-          `(${event.source}). ${queueLength} still waiting. Detection is outpacing metrics collection; ` +
-          `raise polling.maxConcurrentTokens only if your RPC provider has rate-limit headroom.`
-      );
-    },
+    // WorkQueue calls this synchronously inside push(); the detection graph
+    // reads it back as the "queue full" edge and writes the record there.
+    onDrop: (item) => { evicted = item; },
     onError: ({ event }, err: any) => {
       logger.error(`Failed to process ${event.source} event ${event.signature}: ${err?.message || err}`);
     },
     worker: async ({ event, queuedAt }) => {
-      const startedAt = Date.now();
-      const queueWaitMs = startedAt - queuedAt;
-      const detectedAtMs = Date.parse(event.detectedAt);
-
-      const metrics = await collectTokenMetrics(connection, event);
-      const result = evaluateFilters(event, metrics, config.filters);
-
-      const decidedAt = Date.now();
-      decisionLog.record(result, {
-        detectionToDecisionMs: Number.isNaN(detectedAtMs) ? undefined : decidedAt - detectedAtMs,
-        queueWaitMs,
-      });
-      decided++;
-
-      /**
-       * Shadow filters and paper execution, both fed the metrics object the
-       * live filters just used. Neither fetches anything, and both run AFTER
-       * the live decision is recorded so they cannot influence it.
-       */
-      if (shadowCfg.enabled && shadowSets.length > 0) {
-        const shadow = evaluateShadows(event, metrics, result.decision === "PASS" ? "PASS" : "SKIP", shadowSets);
-        shadowLog.append({ event: "shadow-eval", ...shadow });
-      }
-
-      if (paperCfg.enabled) {
-        const { opened, refusal } = paperBook.open({
-          mint: event.mint,
-          at: new Date().toISOString(),
-          liquiditySol: metrics.liquiditySol,
-          liveVerdict: result.decision === "PASS" ? "PASS" : "REJECTED",
-        });
-        if (opened) {
-          paperLog.append({
-            event: "paper-open",
-            mint: opened.mint,
-            openedAt: opened.openedAt,
-            liveVerdict: opened.liveVerdict,
-            entryLiquiditySol: opened.entryLiquiditySol,
-            entryProceedsSol: opened.entryProceedsSol,
-            poolFraction: opened.poolFraction,
-            openNow: paperBook.openCount,
-          });
-        } else if (refusal) {
-          // Recorded, never silent - a cap applied quietly would bias the sample.
-          paperLog.append({ event: "paper-refused", mint: refusal.mint, reason: refusal.reason });
-        }
-      }
-
-      // Baseline is the liquidity the DECISION was made on, so a later multiple
-      // means "grew this much since we looked", not "since some other moment".
-      // Scheduled after the decision is recorded so it can never sit in front
-      // of the live path.
-      outcomeTracker.schedule(event, metrics.liquiditySol ?? null);
-
-      // A SKIP at t+0 is no longer final. Both known winners were rejected here
-      // for being new and grew past the thresholds afterwards, so the token goes
-      // under observation instead of being forgotten.
-      if (result.decision !== "PASS") {
-        watchlist.add(event, metrics.liquiditySol ?? null);
-      }
-
-      if (result.decision === "PASS" && tradingEngine) {
-        await tradingEngine.onFilterPass(event, result);
-      }
+      await runGraph(workerGraph, { event, queuedAt, startedAt: Date.now(), metrics: null, result: null });
     },
+  });
+
+  const workerGraph = buildWorkerGraph({
+    counters,
+    collect: (event) => collectTokenMetrics(connection, event),
+    evaluate: (event, metrics) => evaluateFilters(event, metrics, config.filters),
+    decisionLog: { record: (result, timing) => decisionLog.record(result, timing) },
+    shadow: {
+      enabled: shadowCfg.enabled, hasSets: shadowSets.length > 0,
+      evaluate: (event, metrics, live) => evaluateShadows(event, metrics, live, shadowSets),
+      log: (row) => shadowLog.append(row),
+    },
+    paper: {
+      enabled: paperCfg.enabled,
+      open: (p) => paperBook.open(p),
+      openCount: () => paperBook.openCount,
+      log: (row) => paperLog.append(row),
+    },
+    outcomeSchedule: (event, baseline) => outcomeTracker.schedule(event, baseline),
+    watchlistAdd: (event, liquidity) => watchlist.add(event, liquidity),
+    tradingPass: tradingEngine ? (event, result) => tradingEngine!.onFilterPass(event, result) : null,
   });
 
   // Active-window schedule. A COST control: it decides whether the bot looks,
@@ -295,12 +244,10 @@ async function main() {
   } else {
     logger.info("Schedule is OFF - running continuously. Turn it on against scripts/hourly-histogram.ts, not a blog.");
   }
-  let notEvaluated = 0;
 
   // The credit circuit breaker. Constructed here so a bad budget fails at
   // startup rather than at the moment it would have saved the plan.
   const breaker = new CreditBreaker(config.creditBudget);
-  let creditHalted = 0;
   if (config.creditBudget.enabled) {
     const opening = breaker.decide(new Date());
     logger.warn(
@@ -316,66 +263,30 @@ async function main() {
     );
   }
 
+  const detectionGraph = buildDetectionGraph({
+    counters,
+    meterCredits: () => getRpcMeter()?.snapshot(Date.now()).credits ?? null,
+    breaker: {
+      chargeFromMeter: (credits, at) => breaker.chargeFromMeter(credits, at),
+      decide: (at) => breaker.decide(at),
+      persistThrottled: (nowMs) => breaker.persistThrottled(nowMs),
+    },
+    evaluateSchedule: (at) => evaluateSchedule(schedule, at),
+    decisionLog: {
+      recordCreditHalt: (p) => decisionLog.recordCreditHalt(p),
+      recordOutsideSchedule: (p) => decisionLog.recordOutsideSchedule(p),
+      recordDropped: (p) => decisionLog.recordDropped(p),
+    },
+    enqueue: (item) => { evicted = null; queue.push(item); const out = evicted; evicted = null; return out; },
+    delayProbeSchedule: (event) => delayProbe.schedule(event),
+    warn: (msg) => logger.warn(msg),
+    maxQueued: config.polling.maxQueuedTokens,
+  });
+
   watcher.on("newPool", (event: NewPoolEvent) => {
-    detected++;
-
-    const now = new Date();
-
-    // The credit gate, ahead of the schedule gate and ahead of anything that
-    // spends. It charges nothing itself: it reads the meter's own lifetime
-    // credit counter and books the delta, so the two can never drift and no
-    // call is priced twice.
-    const meterSnapshot = getRpcMeter()?.snapshot(Date.now());
-    if (meterSnapshot) breaker.chargeFromMeter(meterSnapshot.credits, now);
-    const budget = breaker.decide(now);
-    breaker.persistThrottled(Date.now());
-    if (!budget.allowed) {
-      creditHalted++;
-      notEvaluated++;
-      decisionLog.recordCreditHalt({
-        mint: event.mint,
-        signature: event.signature,
-        source: event.source,
-        detectedAt: event.detectedAt,
-        reason: budget.reason,
-        detail: budget.detail,
-        resumesAt: budget.resumesAt,
-        dayCredits: budget.dayCredits,
-        monthCredits: budget.monthCredits,
-      });
-      // Same reasoning as the schedule gate below: the delay probe and outcome
-      // tracker both spend, so a halt has to stop them too or it is not a halt.
-      return;
-    }
-
-    // The gate. Checked per detection rather than on a timer so the window
-    // boundary is exact, and evaluated BEFORE anything that costs an RPC call -
-    // metrics collection is the ~110-call step this exists to avoid paying for.
-    const verdict = evaluateSchedule(schedule, now);
-    if (!verdict.active) {
-      notEvaluated++;
-      decisionLog.recordOutsideSchedule({
-        mint: event.mint,
-        signature: event.signature,
-        source: event.source,
-        detectedAt: event.detectedAt,
-        reason: verdict.reason,
-        detail: verdict.detail,
-        nextOpenUtc: verdict.nextOpenUtc,
-      });
-      // The delay probe and outcome tracker are skipped too - both spend RPC
-      // calls, and tracking what a token became when we never evaluated it
-      // would put outcome data in the log for a decision that was never made.
-      // Checkpoints ALREADY pending from before the window closed still run:
-      // those belong to tokens that were evaluated, and dropping them would
-      // throw away the measurement this bot exists to gather.
-      return;
-    }
-
-    queue.push({ event, queuedAt: Date.now() });
-    // Scheduled alongside, not inside, the decision path - schedule() returns
-    // immediately and a probe failure can never reach the live pipeline.
-    delayProbe.schedule(event);
+    runGraph(detectionGraph, { event, now: new Date(), budget: null, schedule: null, dropped: null }).catch((err) =>
+      logger.error(`detection graph failed for ${event.mint}: ${err?.message || err}`)
+    );
   });
 
   // Periodic visibility into whether the queue is keeping up. Silent when idle.
@@ -386,7 +297,7 @@ async function main() {
         `queue: ${s.running} processing, ${s.queued} waiting, ${s.totalCompleted} done, ${s.totalDropped} dropped`
       );
       // Persisted too, so totals survive a crash rather than living only in stdout.
-      decisionLog.recordQueueStats({ detected, decided, dropped, queued: s.queued, running: s.running });
+      decisionLog.recordQueueStats({ detected: counters.detected, decided: counters.decided, dropped: counters.dropped, queued: s.queued, running: s.running });
     }
     if (config.delayProbe.enabled) {
       const p = delayProbe.stats();
@@ -408,7 +319,7 @@ async function main() {
       paperLog.append({ event: "paper-summary", ...ps });
     }
 
-    delayProbe.recordStats(detected);
+    delayProbe.recordStats(counters.detected);
       }
     }
     if (config.watchlist.enabled) {
@@ -442,39 +353,39 @@ async function main() {
     clearInterval(queueStatsTimer);
     const s = queue.stats();
     decisionLog.recordQueueStats({
-      detected,
-      decided,
-      dropped,
-      notEvaluated,
+      detected: counters.detected,
+      decided: counters.decided,
+      dropped: counters.dropped,
+      notEvaluated: counters.notEvaluated,
       queued: s.queued,
       running: s.running,
     });
-    const accounted = decided + dropped + notEvaluated + s.queued;
+    const accounted = counters.decided + counters.dropped + counters.notEvaluated + s.queued;
     // notEvaluated is split by cause. Rolling a credit halt into "outside
     // schedule" would hide the one of the two that needs someone to act.
     logger.info(
-      `Final tally: detected=${detected} decided=${decided} dropped=${dropped} ` +
-        `notEvaluated=${notEvaluated} (${notEvaluated - creditHalted} outside schedule, ` +
-        `${creditHalted} credit-halted) stillQueued=${s.queued}. ` +
+      `Final tally: detected=${counters.detected} decided=${counters.decided} dropped=${counters.dropped} ` +
+        `notEvaluated=${counters.notEvaluated} (${counters.notEvaluated - counters.creditHalted} outside schedule, ` +
+        `${counters.creditHalted} credit-halted) stillQueued=${s.queued}. ` +
         `These are also in the decision log (event="queue-stats") so the run can be reconciled later.`
     );
     // The last word on spend, written before anything else can fail.
     breaker.persist();
     logger.info(`Credit ledger: ${breaker.decide(new Date()).detail}`);
-    if (creditHalted > 0) {
+    if (counters.creditHalted > 0) {
       logger.warn(
-        `*** ${creditHalted} token(s) went unevaluated because the credit breaker had HALTED detection. ` +
+        `*** ${counters.creditHalted} token(s) went unevaluated because the credit breaker had HALTED detection. ` +
           `That is a budget event, not a quiet market - see event="credit-halt" in ${config.logging.decisionsFile}. ***`
       );
     }
-    if (accounted !== detected) {
+    if (accounted !== counters.detected) {
       // Says so rather than printing a tally that quietly does not add up.
       logger.warn(
-        `Reconciliation gap: ${detected} detected but ${accounted} accounted for ` +
-          `(difference ${detected - accounted}). Some tokens went somewhere this tally does not name.`
+        `Reconciliation gap: ${counters.detected} detected but ${accounted} accounted for ` +
+          `(difference ${counters.detected - accounted}). Some tokens went somewhere this tally does not name.`
       );
     }
-    delayProbe.recordStats(detected);
+    delayProbe.recordStats(counters.detected);
     delayProbe.stop();
     // Pending checkpoints stay on disk on purpose - the next run replays them.
     outcomeTracker.stop();

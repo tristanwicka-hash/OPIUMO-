@@ -127,6 +127,40 @@ export async function fetchHolderDataViaDas(
  * Older tokens use the 1-credit path, with DAS as a fallback if the index still
  * is not there.
  */
+/** The 1-credit path (2 calls): largest accounts, then the creator's balance. Throws on RPC failure. */
+export async function fetchHolderDataViaLargestAccounts(
+  connection: Connection,
+  params: { mint: PublicKey; supplyRaw: bigint; creator: PublicKey | null; excludeAddresses: Set<string> }
+): Promise<HolderData> {
+  const largest = await connection.getTokenLargestAccounts(params.mint);
+  const candidates = largest.value.filter((a) => !params.excludeAddresses.has(a.address.toBase58()));
+  const topRaw = candidates.length === 0 ? 0n : BigInt(candidates[0].amount);
+  const top = params.supplyRaw === 0n ? null : Number((topRaw * 10000n) / params.supplyRaw) / 100;
+  let dev: number | null = null;
+  if (params.creator) {
+    const owned = await connection.getParsedTokenAccountsByOwner(params.creator, { mint: params.mint });
+    let raw = 0n;
+    for (const { account } of owned.value) {
+      const amount = account.data.parsed?.info?.tokenAmount?.amount;
+      if (amount) raw += BigInt(amount);
+    }
+    dev = params.supplyRaw === 0n ? null : Number((raw * 10000n) / params.supplyRaw) / 100;
+  }
+  return { topHolderPercent: top, devWalletPercent: dev, source: "largest-accounts", creditsSpent: 2, error: null };
+}
+
+/** Pure: which holder route a token takes. The graph in src/graph/metricsGraph.ts declares this as an edge. */
+export function holderRoute(tokenAgeMs: number, dasAgeThresholdMs: number | undefined, allowDas: boolean | undefined): "das" | "largest-accounts" {
+  const threshold = dasAgeThresholdMs ?? DEFAULT_DAS_AGE_THRESHOLD_MS;
+  return tokenAgeMs < threshold && allowDas !== false ? "das" : "largest-accounts";
+}
+
+/**
+ * The original single entry point, kept for callers and tests. The live
+ * pipeline now walks the same steps as graph nodes (src/graph/metricsGraph.ts);
+ * this function and those nodes must agree, and tests/test-eval-goldens.ts
+ * holds them to it.
+ */
 export async function collectHolderData(
   connection: Connection,
   params: {
@@ -141,45 +175,12 @@ export async function collectHolderData(
     allowDas?: boolean;
   }
 ): Promise<HolderData> {
-  const threshold = params.dasAgeThresholdMs ?? DEFAULT_DAS_AGE_THRESHOLD_MS;
   const allowDas = params.allowDas !== false;
-
-  // Young AND allowed to pay: DAS is the only thing that works this early.
-  if (params.tokenAgeMs < threshold && allowDas) {
+  if (holderRoute(params.tokenAgeMs, params.dasAgeThresholdMs, params.allowDas) === "das") {
     return fetchHolderDataViaDas(connection, params.mint, params.supplyRaw, params.creator, params.excludeAddresses);
   }
-
-  /**
-   * Otherwise fall through to the 1-credit path - INCLUDING when the token is
-   * young and DAS is off.
-   *
-   * Giving up without trying was a real bug, found on the first live run of
-   * option (d): the watchlist re-evaluates at a median of 66s, below the 120s
-   * threshold, so every re-evaluation returned "none" at 0 credits and produced
-   * no data at all. The threshold is a guess about when the index appears; the
-   * call itself is the actual test, and it costs 1 credit to ask. If the index
-   * is not there yet it fails, which is reported as unchecked - no worse than
-   * not asking, and it succeeds whenever the index has arrived.
-   */
-
-  // Old enough that the index should exist. Try the 1-credit path.
   try {
-    const largest = await connection.getTokenLargestAccounts(params.mint);
-    const candidates = largest.value.filter((a) => !params.excludeAddresses.has(a.address.toBase58()));
-    const topRaw = candidates.length === 0 ? 0n : BigInt(candidates[0].amount);
-    const top = params.supplyRaw === 0n ? null : Number((topRaw * 10000n) / params.supplyRaw) / 100;
-
-    let dev: number | null = null;
-    if (params.creator) {
-      const owned = await connection.getParsedTokenAccountsByOwner(params.creator, { mint: params.mint });
-      let raw = 0n;
-      for (const { account } of owned.value) {
-        const amount = account.data.parsed?.info?.tokenAmount?.amount;
-        if (amount) raw += BigInt(amount);
-      }
-      dev = params.supplyRaw === 0n ? null : Number((raw * 10000n) / params.supplyRaw) / 100;
-    }
-    return { topHolderPercent: top, devWalletPercent: dev, source: "largest-accounts", creditsSpent: 2, error: null };
+    return await fetchHolderDataViaLargestAccounts(connection, params);
   } catch (err: any) {
     if (!allowDas) {
       return {

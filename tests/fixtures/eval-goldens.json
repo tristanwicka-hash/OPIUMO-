@@ -1,0 +1,434 @@
+{
+  "pumpfun: cheap fail on liquidity, everything downstream skipped": {
+    "metrics": {
+      "mint": "So11111111111111111111111111111111111111112",
+      "decimals": 6,
+      "liquiditySol": 0.5,
+      "topHolderPercent": null,
+      "devWalletPercent": null,
+      "mintAuthorityRenounced": true,
+      "freezeAuthorityRenounced": true,
+      "riskyTokenExtensions": [],
+      "holderSource": "skipped-cheap-fail",
+      "holderCreditsSpent": 0,
+      "lpBurnStatus": "not-applicable",
+      "lpBurned": null,
+      "launchSlotBuyers": null,
+      "launchSlotTxs": null,
+      "bundleSource": "skipped-cheap-fail",
+      "bundleCreditsSpent": 0,
+      "creatorLpPercent": null,
+      "lpCheckApplicable": false,
+      "uniqueWallets": null,
+      "transactionCount": null,
+      "stale": false,
+      "activitySkippedEarly": true,
+      "warnings": [
+        "holder data not fetched - token already failed a cheaper check (liquidity too low (0.50 SOL < min 5 SOL)). Reported unchecked, not assumed."
+      ]
+    },
+    "decision": "SKIP",
+    "reasons": [
+      "liquidity too low (0.50 SOL < min 5 SOL)",
+      "top holder % unknown (could not fetch largest accounts)",
+      "dev wallet % unknown (could not fetch creator balance)",
+      "activity metrics not collected (skipped early - token already failed an earlier check)"
+    ]
+  },
+  "pumpfun: cheap pass, holder ok, 3 launch-slot buyers, activity ok": {
+    "metrics": {
+      "mint": "So11111111111111111111111111111111111111112",
+      "decimals": 6,
+      "liquiditySol": 10,
+      "topHolderPercent": 5,
+      "devWalletPercent": 2,
+      "mintAuthorityRenounced": true,
+      "freezeAuthorityRenounced": true,
+      "riskyTokenExtensions": [],
+      "holderSource": "largest-accounts",
+      "holderCreditsSpent": 2,
+      "lpBurnStatus": "not-applicable",
+      "lpBurned": null,
+      "launchSlotBuyers": 3,
+      "launchSlotTxs": 3,
+      "bundleSource": "fetched",
+      "bundleCreditsSpent": 4,
+      "creatorLpPercent": null,
+      "lpCheckApplicable": false,
+      "uniqueWallets": 5,
+      "transactionCount": 20,
+      "stale": false,
+      "activitySkippedEarly": false,
+      "warnings": []
+    },
+    "decision": "SKIP",
+    "reasons": [
+      "too few unique wallets (5 < min 20)",
+      "too few transactions (20 < min 30)"
+    ]
+  },
+  "pumpfun: cheap pass but largest-accounts throws (DAS disabled) -> holder none": {
+    "metrics": {
+      "mint": "So11111111111111111111111111111111111111112",
+      "decimals": 6,
+      "liquiditySol": 10,
+      "topHolderPercent": null,
+      "devWalletPercent": null,
+      "mintAuthorityRenounced": true,
+      "freezeAuthorityRenounced": true,
+      "riskyTokenExtensions": [],
+      "holderSource": "none",
+      "holderCreditsSpent": 1,
+      "lpBurnStatus": "not-applicable",
+      "lpBurned": null,
+      "launchSlotBuyers": null,
+      "launchSlotTxs": null,
+      "bundleSource": "unknown",
+      "bundleCreditsSpent": 1,
+      "creatorLpPercent": null,
+      "lpCheckApplicable": false,
+      "uniqueWallets": null,
+      "transactionCount": null,
+      "stale": false,
+      "activitySkippedEarly": true,
+      "warnings": [
+        "holderData: largest-accounts failed (index not built) and DAS is disabled",
+        "bundle: the newest 25 signatures do not reach back to slot 1000 - a count would be a floor, so none is given"
+      ]
+    },
+    "decision": "SKIP",
+    "reasons": [
+      "top holder % unknown (could not fetch largest accounts)",
+      "dev wallet % unknown (could not fetch creator balance)",
+      "activity metrics not collected (skipped early - token already failed an earlier check)"
+    ]
+  },
+  "pumpfun: mint account unreadable -> renounce unknown, decimals null": {
+    "metrics": {
+      "mint": "So11111111111111111111111111111111111111112",
+      "decimals": null,
+      "liquiditySol": 10,
+      "topHolderPercent": null,
+      "devWalletPercent": null,
+      "mintAuthorityRenounced": null,
+      "freezeAuthorityRenounced": null,
+      "riskyTokenExtensions": null,
+      "holderSource": "skipped-cheap-fail",
+      "holderCreditsSpent": 0,
+      "lpBurnStatus": "not-applicable",
+      "lpBurned": null,
+      "launchSlotBuyers": null,
+      "launchSlotTxs": null,
+      "bundleSource": "skipped-cheap-fail",
+      "bundleCreditsSpent": 0,
+      "creatorLpPercent": null,
+      "lpCheckApplicable": false,
+      "uniqueWallets": null,
+      "transactionCount": null,
+      "stale": false,
+      "activitySkippedEarly": true,
+      "warnings": [
+        "renounce status: mint account not found",
+        "holder data not fetched - token already failed a cheaper check (mint authority renounce status unknown (could not fetch mint account)). Reported unchecked, not assumed."
+      ]
+    },
+    "decision": "SKIP",
+    "reasons": [
+      "top holder % unknown (could not fetch largest accounts)",
+      "dev wallet % unknown (could not fetch creator balance)",
+      "mint authority renounce status unknown (could not fetch mint account)",
+      "freeze authority renounce status unknown (could not fetch mint account)",
+      "token extensions unknown (could not fetch mint account)",
+      "activity metrics not collected (skipped early - token already failed an earlier check)"
+    ]
+  },
+  "pumpfun: mint authority still live -> cheap fail": {
+    "metrics": {
+      "mint": "So11111111111111111111111111111111111111112",
+      "decimals": 6,
+      "liquiditySol": 10,
+      "topHolderPercent": null,
+      "devWalletPercent": null,
+      "mintAuthorityRenounced": false,
+      "freezeAuthorityRenounced": true,
+      "riskyTokenExtensions": [],
+      "holderSource": "skipped-cheap-fail",
+      "holderCreditsSpent": 0,
+      "lpBurnStatus": "not-applicable",
+      "lpBurned": null,
+      "launchSlotBuyers": null,
+      "launchSlotTxs": null,
+      "bundleSource": "skipped-cheap-fail",
+      "bundleCreditsSpent": 0,
+      "creatorLpPercent": null,
+      "lpCheckApplicable": false,
+      "uniqueWallets": null,
+      "transactionCount": null,
+      "stale": false,
+      "activitySkippedEarly": true,
+      "warnings": [
+        "holder data not fetched - token already failed a cheaper check (mint authority not renounced (dev can still mint more supply)). Reported unchecked, not assumed."
+      ]
+    },
+    "decision": "SKIP",
+    "reasons": [
+      "top holder % unknown (could not fetch largest accounts)",
+      "dev wallet % unknown (could not fetch creator balance)",
+      "mint authority not renounced (dev can still mint more supply)",
+      "activity metrics not collected (skipped early - token already failed an earlier check)"
+    ]
+  },
+  "pumpfun: no pool address -> liquidity warning, activity by mint": {
+    "metrics": {
+      "mint": "So11111111111111111111111111111111111111112",
+      "decimals": 6,
+      "liquiditySol": null,
+      "topHolderPercent": null,
+      "devWalletPercent": null,
+      "mintAuthorityRenounced": true,
+      "freezeAuthorityRenounced": true,
+      "riskyTokenExtensions": [],
+      "holderSource": "skipped-cheap-fail",
+      "holderCreditsSpent": 0,
+      "lpBurnStatus": "not-applicable",
+      "lpBurned": null,
+      "launchSlotBuyers": null,
+      "launchSlotTxs": null,
+      "bundleSource": "skipped-cheap-fail",
+      "bundleCreditsSpent": 0,
+      "creatorLpPercent": null,
+      "lpCheckApplicable": false,
+      "uniqueWallets": null,
+      "transactionCount": null,
+      "stale": false,
+      "activitySkippedEarly": true,
+      "warnings": [
+        "no pool address available - cannot compute liquiditySol",
+        "holder data not fetched - token already failed a cheaper check (liquidity unknown (could not fetch pool balance)). Reported unchecked, not assumed."
+      ]
+    },
+    "decision": "SKIP",
+    "reasons": [
+      "liquidity unknown (could not fetch pool balance)",
+      "top holder % unknown (could not fetch largest accounts)",
+      "dev wallet % unknown (could not fetch creator balance)",
+      "activity metrics not collected (skipped early - token already failed an earlier check)"
+    ]
+  },
+  "raydium: SOL-paired pool, LP burned, creator holds no LP": {
+    "metrics": {
+      "mint": "So11111111111111111111111111111111111111112",
+      "decimals": 6,
+      "liquiditySol": 12.5,
+      "topHolderPercent": 1,
+      "devWalletPercent": 0,
+      "mintAuthorityRenounced": true,
+      "freezeAuthorityRenounced": true,
+      "riskyTokenExtensions": [],
+      "holderSource": "largest-accounts",
+      "holderCreditsSpent": 2,
+      "lpBurnStatus": "burned",
+      "lpBurned": true,
+      "launchSlotBuyers": 2,
+      "launchSlotTxs": 2,
+      "bundleSource": "fetched",
+      "bundleCreditsSpent": 3,
+      "creatorLpPercent": null,
+      "lpCheckApplicable": true,
+      "uniqueWallets": null,
+      "transactionCount": null,
+      "stale": false,
+      "activitySkippedEarly": true,
+      "warnings": []
+    },
+    "decision": "SKIP",
+    "reasons": [
+      "creator LP % unknown (could not fetch LP mint/holdings)",
+      "activity metrics not collected (skipped early - token already failed an earlier check)"
+    ]
+  },
+  "raydium: no pcMint captured -> liquidity warning, cheap fail": {
+    "metrics": {
+      "mint": "So11111111111111111111111111111111111111112",
+      "decimals": 6,
+      "liquiditySol": null,
+      "topHolderPercent": null,
+      "devWalletPercent": null,
+      "mintAuthorityRenounced": true,
+      "freezeAuthorityRenounced": true,
+      "riskyTokenExtensions": [],
+      "holderSource": "skipped-cheap-fail",
+      "holderCreditsSpent": 0,
+      "lpBurnStatus": "burned",
+      "lpBurned": true,
+      "launchSlotBuyers": null,
+      "launchSlotTxs": null,
+      "bundleSource": "skipped-cheap-fail",
+      "bundleCreditsSpent": 0,
+      "creatorLpPercent": null,
+      "lpCheckApplicable": true,
+      "uniqueWallets": null,
+      "transactionCount": null,
+      "stale": false,
+      "activitySkippedEarly": true,
+      "warnings": [
+        "no pcMint captured - cannot determine which vault is the SOL side",
+        "holder data not fetched - token already failed a cheaper check (liquidity unknown (could not fetch pool balance)). Reported unchecked, not assumed."
+      ]
+    },
+    "decision": "SKIP",
+    "reasons": [
+      "liquidity unknown (could not fetch pool balance)",
+      "top holder % unknown (could not fetch largest accounts)",
+      "dev wallet % unknown (could not fetch creator balance)",
+      "creator LP % unknown (could not fetch LP mint/holdings)",
+      "activity metrics not collected (skipped early - token already failed an earlier check)"
+    ]
+  },
+  "pumpfun: cheap fail but forceActivityMetrics (delay probe / watchlist) -> activity fetched": {
+    "metrics": {
+      "mint": "So11111111111111111111111111111111111111112",
+      "decimals": 6,
+      "liquiditySol": 0.2,
+      "topHolderPercent": null,
+      "devWalletPercent": null,
+      "mintAuthorityRenounced": true,
+      "freezeAuthorityRenounced": true,
+      "riskyTokenExtensions": [],
+      "holderSource": "skipped-cheap-fail",
+      "holderCreditsSpent": 0,
+      "lpBurnStatus": "not-applicable",
+      "lpBurned": null,
+      "launchSlotBuyers": null,
+      "launchSlotTxs": null,
+      "bundleSource": "skipped-cheap-fail",
+      "bundleCreditsSpent": 0,
+      "creatorLpPercent": null,
+      "lpCheckApplicable": false,
+      "uniqueWallets": 3,
+      "transactionCount": 4,
+      "stale": false,
+      "activitySkippedEarly": false,
+      "warnings": [
+        "holder data not fetched - token already failed a cheaper check (liquidity too low (0.20 SOL < min 5 SOL)). Reported unchecked, not assumed."
+      ]
+    },
+    "decision": "SKIP",
+    "reasons": [
+      "liquidity too low (0.20 SOL < min 5 SOL)",
+      "top holder % unknown (could not fetch largest accounts)",
+      "dev wallet % unknown (could not fetch creator balance)",
+      "too few unique wallets (3 < min 20)",
+      "too few transactions (4 < min 30)"
+    ]
+  },
+  "pumpfun: activity fetch throws -> warning, nulls": {
+    "metrics": {
+      "mint": "So11111111111111111111111111111111111111112",
+      "decimals": 6,
+      "liquiditySol": 0.2,
+      "topHolderPercent": null,
+      "devWalletPercent": null,
+      "mintAuthorityRenounced": true,
+      "freezeAuthorityRenounced": true,
+      "riskyTokenExtensions": [],
+      "holderSource": "skipped-cheap-fail",
+      "holderCreditsSpent": 0,
+      "lpBurnStatus": "not-applicable",
+      "lpBurned": null,
+      "launchSlotBuyers": null,
+      "launchSlotTxs": null,
+      "bundleSource": "skipped-cheap-fail",
+      "bundleCreditsSpent": 0,
+      "creatorLpPercent": null,
+      "lpCheckApplicable": false,
+      "uniqueWallets": null,
+      "transactionCount": null,
+      "stale": false,
+      "activitySkippedEarly": false,
+      "warnings": [
+        "holder data not fetched - token already failed a cheaper check (liquidity too low (0.20 SOL < min 5 SOL)). Reported unchecked, not assumed.",
+        "walletActivity: 429"
+      ]
+    },
+    "decision": "SKIP",
+    "reasons": [
+      "liquidity too low (0.20 SOL < min 5 SOL)",
+      "top holder % unknown (could not fetch largest accounts)",
+      "dev wallet % unknown (could not fetch creator balance)",
+      "wallet activity unknown (could not fetch recent signatures)"
+    ]
+  },
+  "pumpfun: liquidity read hangs -> per-call timeout, liquidity unknown": {
+    "metrics": {
+      "mint": "So11111111111111111111111111111111111111112",
+      "decimals": 6,
+      "liquiditySol": null,
+      "topHolderPercent": null,
+      "devWalletPercent": null,
+      "mintAuthorityRenounced": true,
+      "freezeAuthorityRenounced": true,
+      "riskyTokenExtensions": [],
+      "holderSource": "skipped-cheap-fail",
+      "holderCreditsSpent": 0,
+      "lpBurnStatus": "not-applicable",
+      "lpBurned": null,
+      "launchSlotBuyers": null,
+      "launchSlotTxs": null,
+      "bundleSource": "skipped-cheap-fail",
+      "bundleCreditsSpent": 0,
+      "creatorLpPercent": null,
+      "lpCheckApplicable": false,
+      "uniqueWallets": null,
+      "transactionCount": null,
+      "stale": false,
+      "activitySkippedEarly": true,
+      "warnings": [
+        "liquiditySol: pumpfun liquidity timed out after 60ms",
+        "holder data not fetched - token already failed a cheaper check (liquidity unknown (could not fetch pool balance)). Reported unchecked, not assumed."
+      ]
+    },
+    "decision": "SKIP",
+    "reasons": [
+      "liquidity unknown (could not fetch pool balance)",
+      "top holder % unknown (could not fetch largest accounts)",
+      "dev wallet % unknown (could not fetch creator balance)",
+      "activity metrics not collected (skipped early - token already failed an earlier check)"
+    ]
+  },
+  "pumpfun: bundle window does not reach the launch slot -> unknown": {
+    "metrics": {
+      "mint": "So11111111111111111111111111111111111111112",
+      "decimals": 6,
+      "liquiditySol": 10,
+      "topHolderPercent": 1,
+      "devWalletPercent": 0,
+      "mintAuthorityRenounced": true,
+      "freezeAuthorityRenounced": true,
+      "riskyTokenExtensions": [],
+      "holderSource": "largest-accounts",
+      "holderCreditsSpent": 2,
+      "lpBurnStatus": "not-applicable",
+      "lpBurned": null,
+      "launchSlotBuyers": null,
+      "launchSlotTxs": null,
+      "bundleSource": "unknown",
+      "bundleCreditsSpent": 1,
+      "creatorLpPercent": null,
+      "lpCheckApplicable": false,
+      "uniqueWallets": 2,
+      "transactionCount": 20,
+      "stale": false,
+      "activitySkippedEarly": false,
+      "warnings": [
+        "bundle: the newest 25 signatures do not reach back to slot 900 - a count would be a floor, so none is given"
+      ]
+    },
+    "decision": "SKIP",
+    "reasons": [
+      "too few unique wallets (2 < min 20)",
+      "too few transactions (20 < min 30)",
+      "wallet/tx ratio too low (0.10 < min 0.15, suggests a few wallets doing most of the volume - possible wash trading)"
+    ]
+  }
+}

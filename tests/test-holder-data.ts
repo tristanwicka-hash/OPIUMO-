@@ -253,37 +253,53 @@ check(
 
 }
 main().then(() => {
-section("THE EXPENSIVE CALL IS ACTUALLY LAST - structural, in the collector");
+section("THE EXPENSIVE CALL IS ACTUALLY LAST - declared in the graph, and walked");
 
-// Added after a mutation escaped: removing the cheap gate from
-// tokenMetrics.ts turned NOTHING red, because every test here exercised
-// collectHolderData directly and none checked that the collector gates it.
-// A guard that only covers the library and not the call site is not a guard.
+// Added after a mutation escaped: removing the cheap gate from the collector
+// turned NOTHING red, because every test here exercised collectHolderData
+// directly and none checked that the collector gates it. The gate now lives in
+// src/graph/metricsGraph.ts as an EDGE, so this asserts the topology - and
+// then runs the graph to prove the edge is taken and no holder call is made.
+const { METRICS_GRAPH, initialMetricsState } = require("../src/graph/metricsGraph") as typeof import("../src/graph/metricsGraph");
+const { runGraph, validateGraph } = require("../src/graph/graph") as typeof import("../src/graph/graph");
 const fs = require("fs") as typeof import("fs");
 const path = require("path") as typeof import("path");
-const collector = fs.readFileSync(path.resolve(process.cwd(), "src/data/tokenMetrics.ts"), "utf-8");
+const graphSrc = fs.readFileSync(path.resolve(process.cwd(), "src/graph/metricsGraph.ts"), "utf-8");
 
-check("the collector evaluates the cheap rules without holder rules", collector.includes("includeHolderRules: false"));
-check("it calls collectHolderData", collector.includes("collectHolderData("));
-const gateIdx = collector.indexOf("cheapReasons.length > 0");
-const callIdx = collector.indexOf("collectHolderData(");
-check("the cheap gate appears BEFORE the expensive call", gateIdx !== -1 && gateIdx < callIdx,
-  `gate at ${gateIdx}, call at ${callIdx}`);
-check(
-  "a cheap failure takes a branch that does NOT call collectHolderData",
-  collector.slice(gateIdx, callIdx).includes("skipped-cheap-fail")
-);
-check(
-  "and that branch records why, rather than failing silently",
-  collector.includes("already failed a cheaper check")
-);
-// The gate must be a real branch, not a comment someone left behind.
-check(
-  "the gate is live code, not commented out",
-  !collector.split("\n").some((l) => l.trim().startsWith("//") && l.includes("cheapReasons.length > 0"))
-);
+check("the metrics graph validates", validateGraph(METRICS_GRAPH).ok, validateGraph(METRICS_GRAPH).problems.join("; "));
+check("the cheap gate evaluates the rules without holder rules", graphSrc.includes("includeHolderRules: false"));
+const gateEdges = METRICS_GRAPH.edges.cheapGate;
+check("cheapGate's conditional edge goes to holderSkipped", gateEdges[0].to === "holderSkipped" && !!gateEdges[0].when);
+check("cheapGate's default edge goes to holderRoute (the expensive path)", gateEdges[gateEdges.length - 1].to === "holderRoute" && !gateEdges[gateEdges.length - 1].when);
+const skippedSrc = graphSrc.slice(graphSrc.indexOf("function holderSkipped("), graphSrc.indexOf("const excludeSet"));
+check("holderSkipped fetches nothing and records why", !/fetchHolderData|getTokenLargestAccounts|_rpcRequest/.test(skippedSrc) && skippedSrc.includes("already failed a cheaper check"));
+check("holderSkipped leads to stage1Assess, never to a holder node", METRICS_GRAPH.edges.holderSkipped.every((e) => e.to === "stage1Assess"));
 
-console.log(`\nTotal: ${pass} passed, ${fail} failed`);
-if (failures.length) { console.log("\nFailures:"); for (const f of failures) console.log(`  - ${f}`); }
-process.exit(fail > 0 ? 1 : 0);
+(async () => {
+  // Walk it: a token that fails the liquidity rule must take the holderSkipped edge and make NO holder call.
+  let largestCalls = 0, dasCalls = 0;
+  const conn = {
+    getAccountInfo: async () => null, getBalance: async () => 0.1e9,
+    getTokenLargestAccounts: async () => { largestCalls++; return { value: [] }; },
+    getParsedTokenAccountsByOwner: async () => ({ value: [] }),
+    _rpcRequest: async () => { dasCalls++; return { result: { token_accounts: [] } }; },
+    getSignaturesForAddress: async () => [], getParsedTransactions: async () => [],
+  } as any;
+  const event = { source: "pumpfun", signature: "s", slot: 1, mint: "So11111111111111111111111111111111111111112", poolAddress: "11111111111111111111111111111112", detectedAt: new Date().toISOString() } as any;
+  const cfg = require("../src/config").loadConfig();
+  const { path: walked, state } = await runGraph(METRICS_GRAPH, initialMetricsState({
+    connection: conn, event, polling: cfg.polling, filters: cfg.filters,
+    holderCfg: { allowDas: true, dasAgeThresholdMs: 120_000 }, rugCfg: { bundleDetection: true, maxLaunchSlotSignatures: 25 },
+    forceActivityMetrics: false, log: { debug: () => undefined, warn: () => undefined },
+  }));
+  const nodes = walked.map((p) => p.node);
+  check("a cheap failure walks cheapGate -> holderSkipped", nodes.includes("holderSkipped") && !nodes.includes("holderRoute"), nodes.join(">"));
+  check("...and makes no holder call at all (largest-accounts or DAS)", largestCalls === 0 && dasCalls === 0, `${largestCalls}/${dasCalls}`);
+  check("...and records skipped-cheap-fail", state.result?.holderSource === "skipped-cheap-fail");
+
+  console.log(`\nTotal: ${pass} passed, ${fail} failed`);
+  if (failures.length) { console.log("\nFailures:"); for (const f of failures) console.log(`  - ${f}`); }
+  process.exit(fail > 0 ? 1 : 0);
+})();
+
 });

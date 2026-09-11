@@ -1,9 +1,7 @@
 import { Connection, PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
-import { readLpStatus, detectBundle, LpBurnStatus, DEFAULT_MAX_LAUNCH_SLOT_SIGNATURES } from "./rugChecks";
+import { DEFAULT_MAX_LAUNCH_SLOT_SIGNATURES, LpBurnStatus } from "./rugChecks";
 import { unpackMint, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, getExtensionTypes, ExtensionType } from "@solana/spl-token";
 import { loadConfig, PollingConfig, FiltersConfig } from "../config";
-import { evaluateStage1Reasons } from "../filters/engine";
-import { collectHolderData } from "./holderData";
 import { Logger } from "../util/logger";
 import { NewPoolEvent } from "../watcher/types";
 
@@ -336,10 +334,6 @@ export async function collectTokenMetrics(
   const config = loadConfig();
   const polling = { ...config.polling, ...pollingOverrides };
   const filters = filtersOverride ?? config.filters;
-  const warnings: string[] = [];
-  const mint = new PublicKey(event.mint);
-  const startedAt = Date.now();
-  const timeout = <T>(p: Promise<T>, label: string) => withTimeout(p, polling.metricsFetchTimeoutMs, label);
   // Holder-fetch policy. Optional in config so an older config file still runs;
   // the defaults are the ones measured on 2026-09-10.
   const holderRaw = (config as unknown as Record<string, any>).holderData ?? {};
@@ -347,286 +341,24 @@ export async function collectTokenMetrics(
     allowDas: holderRaw.allowDas !== false,
     dasAgeThresholdMs: typeof holderRaw.dasAgeThresholdMs === "number" ? holderRaw.dasAgeThresholdMs : 120_000,
   };
-
-  // ---------------------------------------------------------------------
-  // STAGE 1 - the cheap metrics (~4 RPC calls), run concurrently.
-  //
-  // Two waves, not one, because getTopHolderPercent/getWalletMintPercent both
-  // need `supplyRaw` from the renounce read - without it they return null
-  // before making a call, so firing them alongside it would waste the call.
-  //   wave A: renounce status, liquidity, creator LP   (independent)
-  //   wave B: top holder %, dev wallet %               (need supplyRaw)
-  // ---------------------------------------------------------------------
-  let mintAuthorityRenounced: boolean | null = null;
-  let freezeAuthorityRenounced: boolean | null = null;
-  let riskyTokenExtensions: string[] | null = null;
-  let decimals: number | null = null;
-  let supplyRaw = 0n;
-  let creatorLpPercent: number | null = null;
-  let liquiditySol: number | null = null;
-  const lpCheckApplicable = event.source === "raydium";
-
-  const renouncePromise = (async () => {
-    try {
-      const renounce = await timeout(getRenounceStatus(connection, mint), "renounce status");
-      mintAuthorityRenounced = renounce.mintAuthorityRenounced;
-      freezeAuthorityRenounced = renounce.freezeAuthorityRenounced;
-      riskyTokenExtensions = renounce.riskyTokenExtensions;
-      decimals = renounce.decimals;
-      supplyRaw = renounce.supplyRaw;
-    } catch (err: any) {
-      warnings.push(`renounce status: ${err?.message || err}`);
-      // stays null ("unknown"), NOT false/empty ("confirmed clean") - the filter engine tells those apart.
-    }
-  })();
-
-  const liquidityPromise = (async () => {
-    try {
-      if (event.source === "pumpfun" && event.poolAddress) {
-        liquiditySol = await timeout(getPumpFunLiquiditySol(connection, new PublicKey(event.poolAddress)), "pumpfun liquidity");
-      } else if (event.source === "raydium") {
-        if (!event.raydiumPcMint) {
-          warnings.push("no pcMint captured - cannot determine which vault is the SOL side");
-        } else {
-          liquiditySol = await timeout(
-            getRaydiumLiquiditySol(
-              connection,
-              event.mint,
-              event.raydiumPcMint,
-              event.raydiumCoinVault ? new PublicKey(event.raydiumCoinVault) : undefined,
-              event.raydiumPcVault ? new PublicKey(event.raydiumPcVault) : undefined
-            ),
-            "raydium liquidity"
-          );
-        }
-      } else {
-        warnings.push("no pool address available - cannot compute liquiditySol");
-      }
-    } catch (err: any) {
-      warnings.push(`liquiditySol: ${err?.message || err}`);
-    }
-  })();
-
-  const lpPromise = (async () => {
-    if (!lpCheckApplicable) return;
-    try {
-      if (!event.raydiumLpMint || !event.creator) {
-        warnings.push("no lpMint or creator captured - cannot compute creatorLpPercent");
-      } else {
-        creatorLpPercent = await timeout(
-          getCreatorLpPercent(connection, new PublicKey(event.raydiumLpMint), new PublicKey(event.creator)),
-          "creator LP %"
-        );
-      }
-    } catch (err: any) {
-      warnings.push(`creatorLpPercent: ${err?.message || err}`);
-    }
-  })();
-
-  await Promise.all([renouncePromise, liquidityPromise, lpPromise]);
-
-  /**
-   * HOLDER DATA - THE EXPENSIVE CALL, DELIBERATELY LAST.
-   *
-   * Previously this ran for every token, unconditionally, and cost 2 RPC calls
-   * each. Measured 2026-09-10: only ~11% of tokens pass the cheap checks, so
-   * ~89% of that spend bought nothing - the token was already failing on
-   * liquidity.
-   *
-   * Now the cheap stage-1 rules are evaluated FIRST, without the holder rules
-   * (that is what includeHolderRules:false is for), and holder data is only
-   * fetched for tokens still capable of passing. For young tokens that means a
-   * 10-credit DAS call, because the 1-credit largest-accounts index does not
-   * exist yet at detection - see src/data/holderData.ts for the evidence.
-   */
-  let topHolderPercent: number | null = null;
-  let devWalletPercent: number | null = null;
-  let holderSource: string = "not-fetched";
-  let holderCredits = 0;
   // Rug checks (src/data/rugChecks.ts). Optional in config so an older file still runs.
   const rugRaw = (config as unknown as Record<string, any>).rugChecks ?? {};
   const rugCfg = {
     bundleDetection: rugRaw.bundleDetection !== false,
     maxLaunchSlotSignatures: typeof rugRaw.maxLaunchSlotSignatures === "number" ? rugRaw.maxLaunchSlotSignatures : DEFAULT_MAX_LAUNCH_SLOT_SIGNATURES,
   };
-  let launchSlotBuyers: number | null = null;
-  let launchSlotTxs: number | null = null;
-  let bundleSource: "fetched" | "unknown" | "not-fetched" | "skipped-cheap-fail" | "disabled" = "skipped-cheap-fail";
-  let bundleCredits = 0;
-  // Rug check 3 - LP burn. Free for Pump.fun (not applicable, recorded as such);
-  // one getAccountInfo on the LP mint for Raydium.
-  const lp = await readLpStatus(connection, event);
-  const lpBurnStatus: LpBurnStatus = lp.status;
-  const lpBurned: boolean | null = lp.lpBurned;
-  if (lp.status === "unknown") warnings.push(`lp: ${lp.note}`);
 
-  {
-    // Only the fields the cheap stage-1 rules read. Holder fields are null
-    // because that is exactly what we have not paid for yet, and
-    // includeHolderRules:false tells the rules not to require them.
-    const cheapMetrics = {
-      mint: mint.toBase58(),
-      fetchedAt: new Date().toISOString(),
-      decimals,
-      liquiditySol,
-      topHolderPercent: null,
-      devWalletPercent: null,
-      mintAuthorityRenounced,
-      freezeAuthorityRenounced,
-      uniqueWallets: null,
-      transactionCount: null,
-      riskyTokenExtensions,
-      creatorLpPercent,
-      stale: false,
-      warnings: [],
-    } as unknown as TokenMetrics;
-    const cheapReasons = evaluateStage1Reasons(cheapMetrics, filters, { includeHolderRules: false });
-
-    if (cheapReasons.length > 0) {
-      // Already failing on something cheaper. Spending 10 credits to learn how
-      // concentrated a token we are rejecting anyway is money for nothing.
-      holderSource = "skipped-cheap-fail";
-      warnings.push(
-        `holder data not fetched - token already failed a cheaper check (${cheapReasons[0]}). ` +
-          `Reported unchecked, not assumed.`
-      );
-    } else {
-      const exclude = new Set<string>(
-        [
-          event.poolAddress,
-          event.pumpfunAssociatedBondingCurve,
-          event.raydiumCoinVault,
-          event.raydiumPcVault,
-        ].filter(Boolean) as string[]
-      );
-      const detectedAtMs = Date.parse(event.detectedAt);
-      const ageMs = Number.isNaN(detectedAtMs) ? 0 : Date.now() - detectedAtMs;
-      try {
-        const holder = await timeout(
-          collectHolderData(connection, {
-            mint,
-            supplyRaw,
-            creator: event.creator ? new PublicKey(event.creator) : null,
-            excludeAddresses: exclude,
-            tokenAgeMs: ageMs,
-            dasAgeThresholdMs: holderCfg.dasAgeThresholdMs,
-            allowDas: holderCfg.allowDas,
-          }),
-          "holder data"
-        );
-        topHolderPercent = holder.topHolderPercent;
-        devWalletPercent = holder.devWalletPercent;
-        holderSource = holder.source;
-        holderCredits = holder.creditsSpent;
-        if (holder.error) warnings.push(`holderData: ${holder.error}`);
-      } catch (err: any) {
-        warnings.push(`holderData: ${err?.message || err}`);
-        holderSource = "error";
-      }
-      // Rug check 4 - bundle detection. Same gate as the holder call: only a
-      // token that passed every cheap check pays for it. Cost is recorded.
-      if (rugCfg.bundleDetection) {
-        const bundle = await timeout(detectBundle(connection, event, { maxSignatures: rugCfg.maxLaunchSlotSignatures }), "bundle detection")
-          .catch((err: any) => ({ launchSlotBuyers: null, launchSlotTxs: null, windowExceeded: false, source: "unknown" as const, creditsSpent: 0, note: `bundle detection: ${err?.message || err}` }));
-        launchSlotBuyers = bundle.launchSlotBuyers;
-        launchSlotTxs = bundle.launchSlotTxs;
-        bundleSource = bundle.source;
-        bundleCredits = bundle.creditsSpent;
-        if (bundle.source !== "fetched") warnings.push(`bundle: ${bundle.note}`);
-      } else {
-        bundleSource = "disabled";
-      }
-    }
-  }
-
-  const stage1ElapsedMs = Date.now() - startedAt;
-
-  // ---------------------------------------------------------------------
-  // STAGE 2 GATE - is this token still capable of passing?
-  //
-  // evaluateStage1Reasons() is the SAME code the real filter runs, so this
-  // cannot drift from the actual rules. A non-empty result means the decision
-  // is already SKIP: `reasons` is append-only and no stage-1 rule reads an
-  // activity metric, so stage 2 could only add reasons, never remove one.
-  // Skipping it therefore saves ~101 RPC calls without changing any decision.
-  // ---------------------------------------------------------------------
-  const stage1Reasons = evaluateStage1Reasons(
-    {
-      liquiditySol,
-      topHolderPercent,
-      devWalletPercent,
-      mintAuthorityRenounced,
-      freezeAuthorityRenounced,
-      riskyTokenExtensions,
-      creatorLpPercent,
-      lpCheckApplicable,
-    } as TokenMetrics,
-    filters
+  // The control flow lives in src/graph/metricsGraph.ts as named nodes and
+  // edges; this function only builds the starting state and runs the graph.
+  const { runGraph } = await import("../graph/graph");
+  const { METRICS_GRAPH, initialMetricsState } = await import("../graph/metricsGraph");
+  const { state } = await runGraph(
+    METRICS_GRAPH,
+    initialMetricsState({
+      connection, event, polling, filters, holderCfg, rugCfg,
+      forceActivityMetrics: options?.forceActivityMetrics === true,
+      log: { debug: (m) => logger.debug(m), warn: (m) => logger.warn(m) },
+    })
   );
-  const activitySkippedEarly = stage1Reasons.length > 0 && !options?.forceActivityMetrics;
-
-  let uniqueWallets: number | null = null;
-  let transactionCount: number | null = null;
-  let stage2ElapsedMs: number | null = null;
-
-  if (activitySkippedEarly) {
-    logger.debug(
-      `${event.mint}: skipping activity metrics (~${polling.walletActivitySampleSize + 1} RPC calls) - ` +
-        `already failing on: ${stage1Reasons.join("; ")}`
-    );
-  } else {
-    const stage2StartedAt = Date.now();
-    try {
-      const activityAddress = event.poolAddress ? new PublicKey(event.poolAddress) : mint;
-      const activity = await timeout(
-        getWalletActivity(connection, activityAddress, polling.walletActivitySampleSize),
-        "wallet activity"
-      );
-      uniqueWallets = activity.uniqueWallets;
-      transactionCount = activity.transactionCount;
-    } catch (err: any) {
-      warnings.push(`walletActivity: ${err?.message || err}`);
-    }
-    stage2ElapsedMs = Date.now() - stage2StartedAt;
-  }
-
-  const totalElapsedMs = Date.now() - startedAt;
-  const stale = totalElapsedMs > polling.metricsMaxAgeMs;
-  if (stale) {
-    warnings.push(`metrics took ${totalElapsedMs}ms to collect (> metricsMaxAgeMs ${polling.metricsMaxAgeMs}ms) - data may be stale`);
-  }
-
-  if (warnings.length > 0) {
-    logger.warn(`Partial/stale metrics for ${event.mint}: ${warnings.join("; ")}`);
-  }
-
-  return {
-    mint: event.mint,
-    fetchedAt: new Date().toISOString(),
-    decimals,
-    liquiditySol,
-    topHolderPercent,
-    devWalletPercent,
-    mintAuthorityRenounced,
-    freezeAuthorityRenounced,
-    riskyTokenExtensions,
-    holderSource,
-    holderCreditsSpent: holderCredits,
-    lpBurnStatus,
-    lpBurned,
-    launchSlotBuyers,
-    launchSlotTxs,
-    bundleSource,
-    bundleCreditsSpent: bundleCredits,
-    creatorLpPercent,
-    lpCheckApplicable,
-    uniqueWallets,
-    transactionCount,
-    stale,
-    activitySkippedEarly,
-    stage1ElapsedMs,
-    stage2ElapsedMs,
-    totalElapsedMs,
-    warnings,
-  };
+  return state.result!;
 }
