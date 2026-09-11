@@ -83,6 +83,7 @@ section("joins: winners by exit>entry, first decision per mint, unjoined counted
     { ts: "1", mint: "A", metrics: { liquiditySol: 1 } },
     { ts: "2", mint: "A", metrics: { liquiditySol: 99 } }, // a later re-evaluation; the FIRST is used
     { ts: "3", mint: "B", metrics: { liquiditySol: 2 } },
+    { ts: "4", mint: "G", metrics: { liquiditySol: 3 } },
   ];
   const closes: PaperClose[] = [
     { mint: "A", openedAt: "t1", outcome: "closed", entryProceedsSol: 1, exitProceedsSol: 2 },
@@ -100,11 +101,13 @@ section("joins: winners by exit>entry, first decision per mint, unjoined counted
     { mint: "B", checkpointSeconds: 3600, ok: true, liquiditySol: 1, baselineLiquiditySol: 1 },
     { mint: "B", checkpointSeconds: 21600, ok: true, liquiditySol: 9, baselineLiquiditySol: 1 }, // wrong checkpoint
     { mint: "D", checkpointSeconds: 3600, ok: false, liquiditySol: null, baselineLiquiditySol: 1 }, // failed read: excluded
+    { mint: "G", checkpointSeconds: 3600, ok: false, liquiditySol: 9, baselineLiquiditySol: 1 },    // NOT ok but carries a number: still excluded
     { mint: "E", checkpointSeconds: 3600, ok: true, liquiditySol: 5, baselineLiquiditySol: 0 },     // zero baseline: excluded
     { mint: "F", checkpointSeconds: 3600, ok: true, liquiditySol: 5, baselineLiquiditySol: 1 },     // no decision
   ];
   const o = joinOutcomeSample(outcomes, decisions, 3600, 2);
   check("outcome sample: A wins (4x), B loses (1x), F unjoined", o.winners.length === 1 && o.losers.length === 1 && o.unjoined === 1);
+  check("a checkpoint marked NOT ok is excluded even when it carries a number (G would be a 9x 'winner')", !o.winners.some((d) => d.mint === "G") && !o.losers.some((d) => d.mint === "G"));
   const events: WatchlistEvent[] = [
     { ts: "1", event: "activity-resolved", mint: "A", liquiditySol: 1, uniqueWallets: 5 },
     { ts: "2", event: "activity-resolved", mint: "B", liquiditySol: 3, uniqueWallets: 1 },  // 6h = 9 -> 3x: winner
