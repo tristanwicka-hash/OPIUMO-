@@ -5,6 +5,12 @@ logs/*.log
 logs/*.jsonl
 logs/*.json
 !logs/.gitkeep
+# Test scratch directories. Suites write freely inside their own logs/test-*/
+# folder - that is what keeps them out of the production logs - so the contents
+# change on every run. logs/test-filters/decisions.jsonl was tracked by
+# accident and showed up as a modified file in every commit once the
+# pre-commit hook started running suites before each one.
+logs/test-*/
 data/*.jsonl
 !data/.gitkeep
 *.log
