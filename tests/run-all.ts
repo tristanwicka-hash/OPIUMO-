@@ -98,6 +98,7 @@ const suites = [
   { name: "Holder data routing (offline)", script: "tests/test-holder-data.ts" },
   { name: "Credit circuit breaker (offline)", script: "tests/test-credit-budget.ts" },
   { name: "Replay harness (offline)", script: "tests/test-replay.ts" },
+  { name: "Shadow-filter report (offline)", script: "tests/test-shadow-report.ts" },
   { name: "Fixture-leak guard (offline)", script: "tests/test-no-production-writes.ts" },
   { name: "Run-summary arithmetic (offline)", script: "tests/test-summary.ts" },
 ];
