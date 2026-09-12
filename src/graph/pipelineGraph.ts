@@ -206,7 +206,7 @@ export function buildWorkerGraph(d: WorkerDeps): GraphSpec<WorkerState> {
           liveVerdict: s.result!.decision === "PASS" ? "PASS" : "REJECTED",
         });
         if (opened) {
-          d.paper.log({ event: "paper-open", mint: opened.mint, openedAt: opened.openedAt, liveVerdict: opened.liveVerdict,
+          d.paper.log({ event: "paper-open", mint: opened.mint, openedAt: opened.openedAt, liveVerdict: opened.liveVerdict, venue: opened.venue ?? null, pricingModel: opened.pricingModel ?? null,
             entryLiquiditySol: opened.entryLiquiditySol, entryProceedsSol: opened.entryProceedsSol, poolFraction: opened.poolFraction, openNow: d.paper.openCount() });
         } else if (refusal) {
           // Recorded, never silent - a cap applied quietly would bias the sample.
