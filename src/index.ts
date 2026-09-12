@@ -127,6 +127,8 @@ async function main() {
       maxOpenPositions: paperCfg.maxOpenPositions,
       includeRejected: paperCfg.includeRejected,
       trailing: paperCfg.trailing,
+      // APPROVALS 43 (2026-09-12): Pump.fun positions exit on raised-stop OR take-profit. Records only.
+      raisedTakeProfit: paperCfg.raisedTakeProfit ?? null,
     },
     // Venue-correct pricing (APPROVALS 37): bonding curve for Pump.fun,
     // constant product for Raydium. Records only, as before.

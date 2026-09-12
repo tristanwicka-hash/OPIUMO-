@@ -145,6 +145,15 @@
       "persistenceObservations": 2,
       "minHoldMs": 60000
     },
+    "raisedTakeProfit": {
+      "_comment": "APPROVALS 43, DECIDED (a) BY TRISTAN 2026-09-12, paper book only, records only. Pump.fun positions exit on whichever fires first: the pool's real SOL falling 30% below its level at entry (2 consecutive readings after a 60 s hold) or the position's value reaching +50%. The trailing value stop above stays for every other venue and for comparison. Why: under bonding-curve pricing a -50% VALUE stop cannot fire on a drain for 87.5% of entries (curve floor above 50% below 12.4 SOL raised), so it exits 10 of 92 drains; a stop on SOL raised has no floor. Walk-forward (reports/walk-forward-exit-2026-09-12.md, 561 closes split chronologically): chosen on the first half it scored -15.7% vs the current stop's -22.6% on the second (+6.9% of stake out of sample); chosen on the second half it scored -1.6% vs -23.0% on the first (+21.4%). It still loses; it is the least-losing rule the data shows. Re-read after a week of positions under it. Set enabled=false to revert every NEW position to the trailing stop (open positions keep the rule they opened under).",
+      "enabled": true,
+      "venues": ["pumpfun"],
+      "raisedDropPercent": 30,
+      "takeProfitPercent": 50,
+      "persistenceObservations": 2,
+      "minHoldMs": 60000
+    },
     "logFile": "logs/paper-positions.jsonl"
   },
   "shadowFilters": {

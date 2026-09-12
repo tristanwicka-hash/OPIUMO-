@@ -6,7 +6,10 @@
  * pin that down on a hand-built series, and pin the pyramid and the late
  * entry to their definitions.
  */
-import { price, currentStopRule, doNothingRule, fixedTakeProfitRule, raisedStopRule, raisedTrailRule, eitherRule, replayOne, replayPyramid, summarise, seriesFor, flatStake, poolFractionStake, TaggedClose } from "../src/analysis/venueRerun";
+import { price, currentStopRule, doNothingRule, fixedTakeProfitRule, raisedStopRule, raisedTrailRule, eitherRule, replayOne, replayPyramid, summarise, seriesFor, flatStake, poolFractionStake, TaggedClose, watchlistFiles, loadPaperData } from "../src/analysis/venueRerun";
+import fs from "fs";
+import os from "os";
+import path from "path";
 import { bondingCurveProceeds } from "../src/analysis/venueModels";
 import { TrailingStopConfig } from "../src/trading/trailingStop";
 
@@ -77,6 +80,29 @@ check("no readings -> not entered, said so", !noReadings.entered && /no readings
 const s = summarise([rDrainStop, tp, nothing]);
 check("summary: entered 3, wins 2, win rate withheld under 30 entered", s.entered === 3 && s.wins === 2 && s.winRate === null);
 check("summary: net = returned - staked", Math.abs(s.net - (s.realised - s.staked)) < 1e-12 && Math.abs(s.staked - 0.6) < 1e-12);
+
+console.log("\nLoading readings from every watchlist file, rotations included");
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "venue-rerun-"));
+  const row = (ts: string, mint: string, L: number) => JSON.stringify({ ts, event: "checked", mint, liquiditySol: L }) + "\n";
+  const open = { event: "paper-open", mint: "M", openedAt: "2026-09-12T10:00:00.000Z", entryLiquiditySol: 2, entryProceedsSol: 0.18, poolFraction: 0.05, source: "pumpfun" };
+  const closeRow = { event: "paper-close", mint: "M", openedAt: "2026-09-12T10:00:00.000Z", closedAt: "2026-09-12T18:00:00.000Z", entryLiquiditySol: 2, entryProceedsSol: 0.18, exitProceedsSol: 0.1, poolFraction: 0.05, outcome: "closed" };
+  fs.writeFileSync(path.join(dir, "paper-positions.jsonl"), JSON.stringify(open) + "\n" + JSON.stringify(closeRow) + "\n");
+  fs.writeFileSync(path.join(dir, "decisions.jsonl"), JSON.stringify({ mint: "M", source: "pumpfun", decision: "SKIP" }) + "\n");
+  // Two rotations plus the current file; the current file holds only the newest reading.
+  fs.writeFileSync(path.join(dir, "watchlist.2026-09-12T12-00-00-000Z.jsonl"), row("2026-09-12T10:01:00Z", "M", 1.9) + row("2026-09-12T10:02:00Z", "M", 1.5));
+  fs.writeFileSync(path.join(dir, "watchlist.2026-09-12T17-26-44-691Z.jsonl"), row("2026-09-12T13:00:00Z", "M", 1.0));
+  fs.writeFileSync(path.join(dir, "watchlist.jsonl"), row("2026-09-12T17:30:00Z", "M", 0.5));
+  fs.writeFileSync(path.join(dir, "watchlist.jsonl.bak"), row("2026-09-12T17:31:00Z", "M", 99));
+  check("watchlistFiles lists rotations oldest first and the current file last, nothing else", JSON.stringify(watchlistFiles(dir)) === JSON.stringify(["watchlist.2026-09-12T12-00-00-000Z.jsonl", "watchlist.2026-09-12T17-26-44-691Z.jsonl", "watchlist.jsonl"]), JSON.stringify(watchlistFiles(dir)));
+  const d = loadPaperData(dir);
+  const rs = d.readingsByMint.get("M") ?? [];
+  check("loadPaperData takes the readings from every watchlist file (4 readings, not the current file's 1)", rs.length === 4, String(rs.length));
+  check("...in time order across files", rs.map((r) => r.sol).join(",") === "1.9,1.5,1,0.5", rs.map((r) => r.sol).join(","));
+  check("...and the closed position has a venue and can be replayed with readings", d.closes.length === 1 && replayOne(d.closes[0], rs, "venue", doNothingRule, flatStake(0.2)).entered);
+  check("watchlistFiles on a missing directory is empty, not a throw", watchlistFiles(path.join(dir, "nope")).length === 0);
+  fs.rmSync(dir, { recursive: true, force: true });
+}
 
 console.log(`\nTotal: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

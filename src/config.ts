@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import dotenv from "dotenv";
+import { validateRaisedTakeProfit } from "./trading/raisedExit";
 import { ScheduleConfig, DEFAULT_SCHEDULE, validateSchedule } from "./schedule/scheduler";
 import { CreditBudgetConfig, DEFAULT_CREDIT_BUDGET, validateCreditBudget } from "./rpc/creditBudget";
 import { SupervisorConfig, DEFAULT_SUPERVISOR, validateSupervisor } from "./supervisor/supervisor";
@@ -227,6 +228,15 @@ export interface PaperExecutionConfig {
     hardStopPercent: number;
     activationPercent: number;
     trailPercent: number;
+    persistenceObservations: number;
+    minHoldMs: number;
+  };
+  /** APPROVALS 43: raised-stop OR take-profit for the listed venues (paper book only). */
+  raisedTakeProfit?: {
+    enabled: boolean;
+    venues: string[];
+    raisedDropPercent: number;
+    takeProfitPercent: number;
     persistenceObservations: number;
     minHoldMs: number;
   };
@@ -492,6 +502,9 @@ function validate(config: AppConfig): void {
     if (config.outcomeTracker.sampleRate <= 0 || config.outcomeTracker.sampleRate > 1) {
       errors.push("outcomeTracker.sampleRate must be > 0 and <= 1");
     }
+  }
+  if (config.paperExecution?.raisedTakeProfit?.enabled) {
+    errors.push(...validateRaisedTakeProfit(config.paperExecution.raisedTakeProfit));
   }
   if (config.trading.trailingStopActivateMultiple <= 1) errors.push("trading.trailingStopActivateMultiple must be > 1 (it's a multiple of entry price)");
   if (config.trading.trailingStopPercent <= 0 || config.trading.trailingStopPercent >= 100) {

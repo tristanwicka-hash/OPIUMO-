@@ -41,6 +41,7 @@ import {
   initState,
   step,
 } from "./trailingStop";
+import { RaisedTakeProfitConfig, RaisedState, initRaisedState, stepRaised } from "./raisedExit";
 
 /** What the LIVE filters decided. Recorded so paper results can be split by it. */
 export type LiveVerdict = "PASS" | "REJECTED";
@@ -53,7 +54,15 @@ export interface PaperConfig {
   /** Open paper positions for tokens the live filters REJECTED, not just PASSes. */
   includeRejected: boolean;
   trailing: TrailingStopConfig;
+  /**
+   * APPROVALS 43 (decided (a), 2026-09-12): positions on the listed venues exit
+   * on "raised-stop OR take-profit" instead of the trailing value stop. Omitted
+   * or disabled = every position keeps the trailing stop, as before.
+   */
+  raisedTakeProfit?: (RaisedTakeProfitConfig & { enabled: boolean }) | null;
 }
+
+export type ExitRuleName = "trailing" | "raised-stop-or-take-profit";
 
 /**
  * Pricing per position (NIGHT-PROMPT-V5 Project 2, APPROVALS 37). The book
@@ -85,6 +94,8 @@ export interface PaperPosition {
   venue: string | null;
   /** Which pricing model values this position - recorded so a P&L figure can never be read without its model. */
   pricingModel: string;
+  /** Which exit rule this position is under - recorded on every row so a close can never be read without knowing what closed it. */
+  exitRule: ExitRuleName;
   entryLiquiditySol: number;
   /** Realizable proceeds at entry. Every percentage is measured against this. */
   entryProceedsSol: number;
@@ -98,6 +109,8 @@ export interface PaperPosition {
   peakProceedsSol: number;
   lastProceedsSol: number | null;
   state: TrailState;
+  /** Present only under the raised-stop-or-take-profit rule. */
+  raisedState?: RaisedState;
 }
 
 export interface OpenRefusal {
@@ -179,12 +192,15 @@ export class PaperBook {
       return refuse(`position of ${this.config.poolFraction} of the pool realises nothing at entry - unsellable (${priced.model})`);
     }
 
+    const rtp = this.config.raisedTakeProfit;
+    const exitRule: ExitRuleName = rtp && rtp.enabled && venue !== null && rtp.venues.includes(venue) ? "raised-stop-or-take-profit" : "trailing";
     const position: PaperPosition = {
       mint: params.mint,
       openedAt: params.at,
       liveVerdict: params.liveVerdict,
       venue,
       pricingModel: priced.model,
+      exitRule,
       entryLiquiditySol: params.liquiditySol,
       entryProceedsSol: entryProceeds,
       poolFraction: this.config.poolFraction,
@@ -202,6 +218,9 @@ export class PaperBook {
         entryProceedsSol: entryProceeds,
       } as Position),
     };
+    if (exitRule === "raised-stop-or-take-profit") {
+      position.raisedState = initRaisedState({ entryTs: params.at, entryLiquiditySol: params.liquiditySol, entryProceedsSol: entryProceeds });
+    }
     this.positions.set(params.mint, position);
     this.pricing.set(params.mint, priced.fn);
     return { opened: position, refusal: null };
@@ -225,8 +244,16 @@ export class PaperBook {
       p.lastProceedsSol = realizable;
     }
 
-    const out = step(p.state, obs, this.config.trailing, proceeds, p.poolFraction);
-    p.state = out.state;
+    let out: { decision: ReturnType<typeof step>["decision"] };
+    if (p.exitRule === "raised-stop-or-take-profit" && p.raisedState && this.config.raisedTakeProfit) {
+      const r = stepRaised(p.raisedState, obs, this.config.raisedTakeProfit, proceeds, p.poolFraction);
+      p.raisedState = r.state;
+      out = r;
+    } else {
+      const t = step(p.state, obs, this.config.trailing, proceeds, p.poolFraction);
+      p.state = t.state;
+      out = t;
+    }
 
     if (out.decision.action === "EXIT") {
       p.outcome = "closed";

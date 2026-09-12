@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  OPIUMO supervisor as a macOS LaunchAgent (APPROVALS 42, decided (a) 2026-09-12).
+	  Runs `node dist/src/supervisor/run.js` from the OPIUMO- repo at its NEW path
+	  (~/Projects/TristansVault, APPROVALS 33). KeepAlive restarts the supervisor if
+	  it exits, which closes the "nothing supervises the supervisor" gap; the
+	  supervisor in turn starts/restarts the bot during ON hours (5 min window).
+	  Install:  cp scripts/launchd/com.tristan.opiumo-supervisor.plist ~/Library/LaunchAgents/
+	  Load:     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tristan.opiumo-supervisor.plist
+	  Unload:   launchctl bootout gui/$(id -u)/com.tristan.opiumo-supervisor
+	  `npm run build` must precede any restart: the supervisor and the bot both run from dist/.
+	-->
+	<key>Label</key>
+	<string>com.tristan.opiumo-supervisor</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/node</string>
+		<string>/Users/Tristan/Projects/TristansVault/OPIUMO-/dist/src/supervisor/run.js</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>/Users/Tristan/Projects/TristansVault/OPIUMO-</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<!-- launchd gives agents a minimal PATH; the supervisor spawns the bot as `node dist/src/index.js`, so node must be findable. -->
+		<key>PATH</key>
+		<string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>HOME</key>
+		<string>/Users/Tristan</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<!-- If the supervisor crashes on start (e.g. dist/ missing), do not spin faster than every 30 s. -->
+	<key>ThrottleInterval</key>
+	<integer>30</integer>
+	<key>StandardOutPath</key>
+	<string>/Users/Tristan/Projects/TristansVault/OPIUMO-/logs/supervisor-stdout.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/Tristan/Projects/TristansVault/OPIUMO-/logs/supervisor-stdout.log</string>
+	<key>ProcessType</key>
+	<string>Background</string>
+</dict>
+</plist>

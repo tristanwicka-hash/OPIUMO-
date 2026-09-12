@@ -86,7 +86,8 @@
     "replay:venue": "ts-node scripts/venue-replay.ts",
     "rerun:venue": "ts-node scripts/venue-rerun.ts",
     "test:venue-models": "ts-node tests/test-venue-models.ts",
-    "report:what-separates": "ts-node scripts/what-separates.ts"
+    "report:what-separates": "ts-node scripts/what-separates.ts",
+    "walk-forward:exit": "ts-node scripts/walk-forward-exit.ts"
   },
   "dependencies": {
     "@drift-labs/sdk": "^2.156.0",

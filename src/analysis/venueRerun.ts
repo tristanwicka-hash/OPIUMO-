@@ -44,7 +44,14 @@ function readJsonl<T>(file: string): T[] {
   return out;
 }
 
-/** Closed paper positions (deduplicated), their venue from the decision record, and the watchlist's `checked` readings. */
+/** `watchlist.jsonl` and its rotations (`watchlist.<timestamp>.jsonl`), rotations first in timestamp order, the current file last. */
+export function watchlistFiles(logsDir: string): string[] {
+  if (!fs.existsSync(logsDir)) return [];
+  const all = fs.readdirSync(logsDir).filter((x) => /^watchlist(\..+)?\.jsonl$/.test(x));
+  return [...all.filter((x) => x !== "watchlist.jsonl").sort(), ...all.filter((x) => x === "watchlist.jsonl")];
+}
+
+/** Closed paper positions (deduplicated), their venue from the decision record, and the watchlist's `checked` readings - from every watchlist file, rotations included. */
 export function loadPaperData(logsDir = "logs"): PaperData {
   const rows = readJsonl<any>(path.join(logsDir, "paper-positions.jsonl"));
   const seen = new Set<string>(); const closes: ClosedPosition[] = [];
@@ -60,11 +67,17 @@ export function loadPaperData(logsDir = "logs"): PaperData {
     for (const d of readJsonl<{ mint?: string; source?: string }>(path.join(logsDir, f))) { const v = venueOf(d.source); if (d.mint && v && !venueByMint.has(d.mint)) venueByMint.set(d.mint, v); }
   }
   const readingsByMint = new Map<string, Reading[]>();
-  for (const r of readJsonl<{ ts: string; event: string; mint: string; liquiditySol?: number | null }>(path.join(logsDir, "watchlist.jsonl"))) {
-    // "checked" only: the reading the paper book was fed. "promoted" repeats the last reading; "added" is the t=0 baseline.
-    if (r.event !== "checked" || typeof r.liquiditySol !== "number") continue;
-    if (!readingsByMint.has(r.mint)) readingsByMint.set(r.mint, []);
-    readingsByMint.get(r.mint)!.push({ tMs: Date.parse(r.ts), sol: r.liquiditySol });
+  // Every watchlist file, rotations included: the logger rotates watchlist.jsonl at 20 MB
+  // (watchlist.<ts>.jsonl), and on 2026-09-12 a rotation at 17:26 UTC left the current file
+  // holding only the last few hours - reading it alone silently dropped the readings for
+  // nearly every closed position, so every rule scored "no readings" and nothing was entered.
+  for (const f of watchlistFiles(logsDir)) {
+    for (const r of readJsonl<{ ts: string; event: string; mint: string; liquiditySol?: number | null }>(path.join(logsDir, f))) {
+      // "checked" only: the reading the paper book was fed. "promoted" repeats the last reading; "added" is the t=0 baseline.
+      if (r.event !== "checked" || typeof r.liquiditySol !== "number") continue;
+      if (!readingsByMint.has(r.mint)) readingsByMint.set(r.mint, []);
+      readingsByMint.get(r.mint)!.push({ tMs: Date.parse(r.ts), sol: r.liquiditySol });
+    }
   }
   for (const rs of readingsByMint.values()) rs.sort((a, b) => a.tMs - b.tMs);
   const tagged: TaggedClose[] = []; let unknownVenue = 0;

@@ -69,7 +69,7 @@ export interface TrailingStopConfig {
  * explicitly, so every number in a report traces to a set someone chose.
  */
 
-export type ExitTrigger = "hard-stop" | "trail";
+export type ExitTrigger = "hard-stop" | "trail" | "raised-stop" | "take-profit";
 
 export type Decision =
   | { action: "HOLD"; reason: string }

@@ -201,6 +201,66 @@ check(
   !/new Connection|getConnection/.test(read("src/filters/shadowFilters.ts"))
 );
 
+section("APPROVALS 43: raised-stop OR take-profit for Pump.fun, trailing stop for everyone else (paper book only)");
+
+{
+  const RTP = { enabled: true, venues: ["pumpfun"], raisedDropPercent: 30, takeProfitPercent: 50, persistenceObservations: 2, minHoldMs: 60_000 };
+  const cfgR: PaperConfig = { poolFraction: 0.05, maxOpenPositions: 10, includeRejected: true, trailing: TRAIL, raisedTakeProfit: RTP };
+  const br = new PaperBook(cfgR, venuePricing);
+  const pf = br.open({ mint: "PF", at: at(0), liquiditySol: 2, liveVerdict: "REJECTED", source: "pumpfun" }).opened!;
+  const ray = br.open({ mint: "RAY", at: at(0), liquiditySol: 2, liveVerdict: "REJECTED", source: "raydium" }).opened!;
+  const unk = br.open({ mint: "UNK", at: at(0), liquiditySol: 2, liveVerdict: "REJECTED" }).opened!;
+  check("a Pump.fun position opens under raised-stop-or-take-profit and records it on the row", pf.exitRule === "raised-stop-or-take-profit" && pf.raisedState !== undefined);
+  check("a Raydium position keeps the trailing stop", ray.exitRule === "trailing" && ray.raisedState === undefined);
+  check("an unknown venue keeps the trailing stop", unk.exitRule === "trailing");
+
+  // Drain: 2 SOL raised -> 1.8 (30s) -> 1.0 (61s) -> 0.4 (90s). Stop line = 1.4.
+  br.observe("PF", obs(30, 1.8));
+  check("30s: inside the hold, still open", br.openPositions().some((p) => p.mint === "PF"));
+  br.observe("PF", obs(61, 1.0));
+  check("61s: first breach after the hold, not yet persistent - still open", br.openPositions().some((p) => p.mint === "PF"));
+  const drained = br.observe("PF", obs(90, 0.4))!;
+  check("90s: second consecutive breach -> closed by the raised stop, with the reason on the row", drained.outcome === "closed" && /^raised-stop: SOL raised 0\.400 <= 1\.400/.test(drained.exitReason ?? ""), drained.exitReason ?? "");
+  check("...the exit is priced on the curve at 0.4 raised (about 86-90% of entry), not zero", drained.exitProceedsSol !== null && drained.exitProceedsSol / drained.entryProceedsSol > 0.85 && drained.exitProceedsSol / drained.entryProceedsSol < 0.95, String(drained.exitProceedsSol));
+  // The same drain under the trailing value stop on the curve never fires (this is why the rule exists).
+  const bt = new PaperBook({ ...cfgR, raisedTakeProfit: null }, venuePricing);
+  bt.open({ mint: "PF", at: at(0), liquiditySol: 2, liveVerdict: "REJECTED", source: "pumpfun" });
+  bt.observe("PF", obs(30, 1.8)); bt.observe("PF", obs(61, 1.0)); bt.observe("PF", obs(90, 0.4)); bt.observe("PF", obs(120, 0.0));
+  check("the same drain under the trailing value stop is still open at 0 SOL raised (curve floor)", bt.openPositions().some((p) => p.mint === "PF"));
+
+  // Runner: 2 -> 8 (1.41x, below +50%) -> 16 (2.07x) - take-profit fires at 16, no hold, no persistence.
+  const b2 = new PaperBook(cfgR, venuePricing);
+  const r = b2.open({ mint: "R", at: at(0), liquiditySol: 2, liveVerdict: "REJECTED", source: "pumpfun" }).opened!;
+  b2.observe("R", obs(5, 8));
+  check("+41% is not +50%: still open", b2.openPositions().some((p) => p.mint === "R"));
+  const tp = b2.observe("R", obs(10, 16))!;
+  check("value >= entry x 1.5 -> closed by take-profit inside the hold and on the first reading (no persistence)", tp.outcome === "closed" && /^take-profit:/.test(tp.exitReason ?? "") && tp.exitProceedsSol !== null && tp.exitProceedsSol >= r.entryProceedsSol * 1.5, tp.exitReason ?? "");
+
+  // Wick: one breach then recovery resets the streak.
+  const b3 = new PaperBook(cfgR, venuePricing);
+  b3.open({ mint: "W", at: at(0), liquiditySol: 2, liveVerdict: "REJECTED", source: "pumpfun" });
+  b3.observe("W", obs(61, 1.0)); b3.observe("W", obs(90, 1.9)); const w = b3.observe("W", obs(120, 1.0))!;
+  check("a breach, a recovery, a breach: streak reset, still open", w.outcome === "open" && w.raisedState?.consecutiveBreaches === 1);
+  // Readings inside the hold do not count toward the streak.
+  const b4 = new PaperBook(cfgR, venuePricing);
+  b4.open({ mint: "H", at: at(0), liquiditySol: 2, liveVerdict: "REJECTED", source: "pumpfun" });
+  b4.observe("H", obs(10, 1.0)); b4.observe("H", obs(30, 1.0)); const h = b4.observe("H", obs(61, 1.0))!;
+  check("two breaches inside the hold and one after: streak is 1, still open", h.outcome === "open" && h.raisedState?.consecutiveBreaches === 1, String(h.raisedState?.consecutiveBreaches));
+  // Unsellable -> EXIT_FAILED, never a clean exit.
+  const b5 = new PaperBook(cfgR, unsellable as any);
+  b5.open({ mint: "U", at: at(0), liquiditySol: 2, liveVerdict: "REJECTED", source: "pumpfun" });
+  check("an unsellable Pump.fun position under the rule cannot even open (entry realises nothing)", b5.openPositions().length === 0);
+  // Disabled -> every new position is trailing.
+  const b6 = new PaperBook({ ...cfgR, raisedTakeProfit: { ...RTP, enabled: false } }, venuePricing);
+  const off = b6.open({ mint: "PF", at: at(0), liquiditySol: 2, liveVerdict: "REJECTED", source: "pumpfun" }).opened!;
+  check("enabled=false -> a Pump.fun position opens under the trailing stop", off.exitRule === "trailing");
+  // The live config carries the block and it validates.
+  const live = loadConfig();
+  const lr = live.paperExecution.raisedTakeProfit;
+  check("config/default.json enables the rule for pumpfun only: -30% raised / +50% take-profit / persist 2 / hold 60 s", !!lr && lr.enabled && lr.venues.join() === "pumpfun" && lr.raisedDropPercent === 30 && lr.takeProfitPercent === 50 && lr.persistenceObservations === 2 && lr.minHoldMs === 60_000);
+  check("raisedExit.ts has no order path (no Jupiter, no Connection, no signing)", !/jupiter|Connection|sendTransaction|signTransaction|Keypair/.test(read("src/trading/raisedExit.ts")));
+}
+
 console.log(`\nTotal: ${pass} passed, ${fail} failed`);
 if (failures.length) { console.log("\nFailures:"); for (const f of failures) console.log(`  - ${f}`); }
 process.exit(fail > 0 ? 1 : 0);
