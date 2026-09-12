@@ -3,6 +3,9 @@ import path from "path";
 import dotenv from "dotenv";
 import { ScheduleConfig, DEFAULT_SCHEDULE, validateSchedule } from "./schedule/scheduler";
 import { CreditBudgetConfig, DEFAULT_CREDIT_BUDGET, validateCreditBudget } from "./rpc/creditBudget";
+import { SupervisorConfig, DEFAULT_SUPERVISOR, validateSupervisor } from "./supervisor/supervisor";
+
+export type { SupervisorConfig } from "./supervisor/supervisor";
 
 /**
  * Re-exported so callers can reach the schedule types from ./config like every
@@ -316,6 +319,7 @@ export interface AppConfig {
   logging: LoggingConfig;
   schedule: ScheduleConfig;
   creditBudget: CreditBudgetConfig;
+  supervisor: SupervisorConfig;
   paperExecution: PaperExecutionConfig;
   shadowFilters: ShadowFiltersConfig;
   perps: PerpsConfig;
@@ -366,6 +370,12 @@ function loadJsonConfig(): Omit<AppConfig, "rpcUrl" | "wsUrl" | "walletPrivateKe
   // defaulted to absent would leave exactly the gap it was built to close.
   stripped.creditBudget = { ...DEFAULT_CREDIT_BUDGET, ...(stripped.creditBudget ?? {}) };
 
+  // Optional like the two above. Absent means the defaults (ON, 5-minute window):
+  // a config written before the supervisor existed still loads, and the bot
+  // writes its heartbeat either way - the heartbeat is cheap and read-only for
+  // everyone else. NIGHT-PROMPT-V5 Project 1.
+  stripped.supervisor = { ...DEFAULT_SUPERVISOR, ...(stripped.supervisor ?? {}) };
+
   return stripped;
 }
 
@@ -378,6 +388,7 @@ function validate(config: AppConfig): void {
   // about, and the message names the exact window.
   validateSchedule(config.schedule);
   validateCreditBudget(config.creditBudget);
+  validateSupervisor(config.supervisor);
 
   /**
    * A filter threshold that no token can reach is a bug, not a strict setting.

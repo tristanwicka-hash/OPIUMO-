@@ -2,6 +2,7 @@ import { loadConfig } from "./config";
 import { Logger } from "./util/logger";
 import { loadWalletFromBase58 } from "./util/wallet";
 import { getConnection, confirmConnection } from "./rpc/connection";
+import { HeartbeatWriter } from "./util/heartbeat";
 import { PoolWatcher, NewPoolEvent } from "./watcher";
 import { collectTokenMetrics } from "./data/tokenMetrics";
 import { evaluateFilters } from "./filters/engine";
@@ -283,7 +284,20 @@ async function main() {
     maxQueued: config.polling.maxQueuedTokens,
   });
 
+  // Liveness heartbeat: two timestamps another process can read. The
+  // supervisor (npm run supervisor, its own process) restarts the bot when the
+  // websocket goes quiet during ON hours; the Dashboard shows "last detection".
+  const heartbeat = new HeartbeatWriter({
+    file: config.supervisor.heartbeatFile,
+    writeIntervalMs: config.supervisor.heartbeatWriteIntervalMs,
+    warn: (msg) => logger.warn(msg),
+  });
+  watcher.on("wsMessage", () => heartbeat.wsMessage());
+  heartbeat.start();
+  logger.info(`Heartbeat: writing ${config.supervisor.heartbeatFile} every ${config.supervisor.heartbeatWriteIntervalMs}ms (pid ${process.pid})`);
+
   watcher.on("newPool", (event: NewPoolEvent) => {
+    heartbeat.detection();
     runGraph(detectionGraph, { event, now: new Date(), budget: null, schedule: null, dropped: null }).catch((err) =>
       logger.error(`detection graph failed for ${event.mint}: ${err?.message || err}`)
     );
@@ -398,6 +412,7 @@ async function main() {
     outcomeTracker.stop();
     watchlist.stop();
     tradingEngine?.stop();
+    heartbeat.stop();
     await watcher.stop();
     process.exit(0);
   });

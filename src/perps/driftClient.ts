@@ -120,7 +120,23 @@ export async function confirmDriftConnection(driftClient: DriftClient): Promise<
   }
 }
 
-export async function unsubscribeDriftClient(driftClient: DriftClient): Promise<void> {
-  await driftClient.unsubscribe();
-  client = null;
+/**
+ * Capped: an unsubscribe on a dead websocket never answers (the spot watcher
+ * hung for seven hours on exactly this on 2026-09-12). Wait at most
+ * `timeoutMs`, then drop the reference and move on. Shutdown must finish.
+ */
+export async function unsubscribeDriftClient(driftClient: DriftClient, timeoutMs = 10_000): Promise<"done" | "timeout" | "failed"> {
+  let timer: NodeJS.Timeout | null = null;
+  const capped = new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), timeoutMs); });
+  try {
+    const outcome = await Promise.race([
+      driftClient.unsubscribe().then(() => "done" as const, (err: any) => { logger.warn(`Drift unsubscribe failed (${err?.message || err}) - continuing shutdown`); return "failed" as const; }),
+      capped,
+    ]);
+    if (outcome === "timeout") logger.warn(`Drift unsubscribe did not answer within ${timeoutMs}ms - abandoning it (the socket is probably dead) and continuing shutdown`);
+    return outcome;
+  } finally {
+    if (timer) clearTimeout(timer);
+    client = null;
+  }
 }

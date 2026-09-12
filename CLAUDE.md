@@ -59,6 +59,7 @@ npm run perps        # run the perps/funding-arb track from source
 npm test             # every test suite
 npm run typecheck    # types only, no build
 npm run build        # compile to dist/  (entry points are dist/src/*.js)
+npm run supervisor   # separate watchdog process; restarts the bot on a silent websocket (README: Liveness heartbeat)
 npm run report:paper # paper-trading performance report -> reports/*.md (offline)
 ```
 

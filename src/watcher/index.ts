@@ -49,6 +49,11 @@ export interface PoolWatcherOptions {
  * watcher tracks a lightweight onSlotChange heartbeat and, if it goes quiet
  * for longer than staleConnectionThresholdMs, tears down and re-establishes
  * every subscription automatically.
+ *
+ * Emits "wsMessage" (no payload) on EVERY websocket delivery - slot change or
+ * program log, whether or not it turns into a newPool. The liveness heartbeat
+ * (src/util/heartbeat.ts) listens to it; a supervisor in another process reads
+ * the heartbeat and restarts the bot if the socket goes quiet during ON hours.
  */
 export class PoolWatcher extends EventEmitter {
   private connection: Connection;
@@ -116,6 +121,7 @@ export class PoolWatcher extends EventEmitter {
     this.lastSlotSeenAt = Date.now();
     this.slotSubscriptionId = this.connection.onSlotChange(() => {
       this.lastSlotSeenAt = Date.now();
+      this.emit("wsMessage");
     });
     this.healthCheckTimer = setInterval(() => this.checkHealth(), this.healthCheckIntervalMs);
   }
@@ -173,12 +179,14 @@ export class PoolWatcher extends EventEmitter {
   }
 
   private async handlePumpFunLogs(logsResult: Logs) {
+    this.emit("wsMessage");
     if (logsResult.err) return;
     if (!isPumpFunCreateLog(logsResult.logs)) return;
     await this.resolveAndEmit("pumpfun", logsResult.signature);
   }
 
   private async handleRaydiumLogs(logsResult: Logs) {
+    this.emit("wsMessage");
     if (logsResult.err) return;
     if (!isRaydiumInitialize2Log(logsResult.logs)) return;
     await this.resolveAndEmit("raydium", logsResult.signature);

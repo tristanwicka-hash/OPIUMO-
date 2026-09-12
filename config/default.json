@@ -106,6 +106,22 @@
     "warnFraction": 0.8,
     "ledgerFile": "logs/credit-ledger.json"
   },
+  "supervisor": {
+    "_comment": "NIGHT-PROMPT-V5 Project 1 (2026-09-12). The bot writes heartbeatFile every heartbeatWriteIntervalMs with the last websocket message and last detection times. A SEPARATE process (npm run supervisor) reads it and, during schedule ON hours only, restarts the bot when the websocket has been silent for wsSilenceWindowMs - after the 2026-09-12 outage where the watcher's own health timer was cleared by the stop() that then hung, leaving the process up and blind for seven hours. The supervisor opens no network connection and spends zero credits. Set enabled=false to have the supervisor exit immediately; the heartbeat is written regardless because the Dashboard reads it.",
+    "enabled": true,
+    "heartbeatFile": "logs/heartbeat.json",
+    "heartbeatWriteIntervalMs": 5000,
+    "wsSilenceWindowMs": 300000,
+    "checkIntervalMs": 30000,
+    "startupGraceMs": 300000,
+    "killGraceMs": 35000,
+    "startCommand": [
+      "node",
+      "dist/src/index.js"
+    ],
+    "botStdoutFile": "logs/bot-stdout.log",
+    "logFile": "logs/supervisor.jsonl"
+  },
   "holderData": {
     "_comment": "How topHolderPercent and devWalletPercent are fetched. DIAGNOSED 2026-09-10 from evidence, and the stated cause was wrong: getTokenLargestAccounts DOES support Token-2022 (it succeeds on the very same mints once they are ~2 minutes old). It fails at DETECTION time because the largest-accounts INDEX has not been built yet - in the decision log the metric succeeded at a median detection-to-decision latency of 161,508ms and failed at 204ms, an 800x split, while getAccountInfo on the same mint succeeded 98% of the time. Raced head to head on 6 fresh mints at 30ms-2.5s: getTokenLargestAccounts failed 6/6, DAS getTokenAccounts succeeded 6/6. So routing is by AGE, not by token program - a legacy mint at 200ms would hit the same unbuilt index. DAS costs 10 credits against 1 (confirmed on Helius's pricing page), so it is used ONLY for tokens young enough that the cheap call would fail AND only after every cheap filter has already passed - measured, that is ~11% of tokens. One DAS call serves BOTH metrics because the response carries owner and amount per account, so it is 10 credits per surviving token, not 20. Measured added cost: ~1,323 credits/hour. DISABLED 2026-09-10 after MEASUREMENT: predicted 1,323 credits/h, measured 2,790/h over 20 minutes, which exceeds the 2,000/h gate. The code stays in place and tested; allowDas is the switch. See APPROVALS item 16 - this needs Tristan's decision, not a quiet re-enable.",
     "allowDas": false,

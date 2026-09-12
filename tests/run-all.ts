@@ -106,6 +106,7 @@ const suites = [
   { name: "Paper execution + shadow filters (offline)", script: "tests/test-paper-execution.ts" },
   { name: "Holder data routing (offline)", script: "tests/test-holder-data.ts" },
   { name: "Credit circuit breaker (offline)", script: "tests/test-credit-budget.ts" },
+  { name: "Liveness heartbeat + supervisor decisions (offline)", script: "tests/test-supervisor.ts" },
   { name: "Replay harness (offline)", script: "tests/test-replay.ts" },
   { name: "Shadow-filter report (offline)", script: "tests/test-shadow-report.ts" },
   { name: "Log integrity invariants (offline)", script: "tests/test-log-integrity.ts" },

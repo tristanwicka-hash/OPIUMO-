@@ -107,6 +107,48 @@ account order the on-chain program expects. `npm run verify:raydium-tx --
 <signature>` (`scripts/verify-raydium-tx.ts`) still exists if you ever want
 to spot-check a specific live transaction, but it's no longer a blocker.
 
+## Liveness heartbeat and supervisor (2026-09-12)
+
+On 2026-09-12 at 00:02 UTC the websocket died. The watcher's own health check
+called `restart()`, `stop()` awaited an unsubscribe on the dead socket that
+never answered, and because `stop()` had already cleared the health timer,
+nothing inside the process could ever try again. The bot stayed up and blind
+for seven hours. A guard that shares the event loop it guards dies with it.
+
+Two pieces now sit outside that loop:
+
+- **Heartbeat** (`src/util/heartbeat.ts`): the bot writes `logs/heartbeat.json`
+  every 5 s with `lastWsMessageAt` (any websocket delivery - slot change or
+  program log), `lastDetectionAt`, `updatedAt`, pid and counters. Written
+  atomically; a failed write is counted and warned once a minute, never fatal.
+- **Supervisor** (`src/supervisor/`, `npm run supervisor`): a separate process
+  that reads the heartbeat every 30 s and, during schedule ON hours only,
+  restarts the bot when the websocket has been silent for
+  `supervisor.wsSilenceWindowMs` (5 min), when the heartbeat itself stops
+  being written (frozen process), or when it stays unreadable for the window.
+  SIGINT first (the bot's graceful handler), SIGKILL after `killGraceMs`. Loud:
+  a `RESTART` line at level `LOUD` in `logs/supervisor.jsonl` plus a banner on
+  stderr (`logs/supervisor-stdout.log`); quiet ticks are logged only on state
+  change and hourly. It imports no RPC code (proven by test) and opens no
+  network socket (proven live with `lsof`), so it spends zero credits.
+  `logs/supervisor-state.json` is what the Dashboard reads.
+
+```bash
+npm run build
+nohup node dist/src/index.js >> logs/bot-stdout.log 2>&1 &            # the bot
+nohup node dist/src/supervisor/run.js >> logs/supervisor-stdout.log 2>&1 &   # the supervisor
+npm run supervisor -- --once --dry-run          # one tick, print the decision, touch nothing
+npm run supervisor -- --window-ms 60000 --check-ms 10000 --ignore-schedule   # a tight test window
+```
+
+Live proof (2026-09-12 16:48-16:54 UTC): the bot's websocket TCP socket was
+paused from outside (process alive, heartbeats fresh, no data). The watcher's
+in-process health check restarted itself ten times in five minutes without
+recovering; the Dashboard showed both ages in red at 5 min; a supervisor with a
+320 s window restarted the bot with a graceful SIGINT and a new pid, and the
+heartbeat resumed 25 s later. All tunables in `config/default.json` under
+`supervisor`. Tests: `npm run test:supervisor`.
+
 <!-- graph-section:start -->
 ## Pipeline as a graph
 
