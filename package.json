@@ -80,7 +80,8 @@
     "replay:late-entry": "ts-node scripts/late-entry-replay.ts",
     "test:late-entry": "ts-node tests/test-late-entry.ts",
     "replay:venue": "ts-node scripts/venue-replay.ts",
-    "test:venue-models": "ts-node tests/test-venue-models.ts"
+    "test:venue-models": "ts-node tests/test-venue-models.ts",
+    "report:what-separates": "ts-node scripts/what-separates.ts"
   },
   "dependencies": {
     "@drift-labs/sdk": "^2.156.0",

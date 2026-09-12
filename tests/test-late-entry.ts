@@ -20,6 +20,8 @@ console.log("\n=== a drain: t=0 enters and loses; 60s does not enter ===");
   const drain = [rd(30, 0.05), rd(60, 0.004), rd(90, 0.003), rd(120, 0.003), rd(150, 0.003)];
   const c = pos({ exitProceedsSol: constantProductProceeds(0.004, 0.05)! });
   check("the position is classed as an instant drain", isDrained(c));
+  // Same collapse but 20 minutes after open: a fade, not an instant drain. The time bound is load-bearing.
+  check("the same collapse 20 minutes later is NOT an instant drain", !isDrained(pos({ exitProceedsSol: constantProductProceeds(0.004, 0.05)!, closedAt: new Date(T0 + 20 * 60_000).toISOString() })));
   const t0 = replayPosition(c, drain, 0, { stakeSol: 0.2, trailing });
   check("t=0 flat 0.2 into a 5-SOL pool is entered and loses almost everything", t0.status === "entered" && t0.netSol !== null && t0.netSol < -0.19, JSON.stringify(t0));
   const d60 = replayPosition(c, drain, 60, { stakeSol: 0.2, trailing });
