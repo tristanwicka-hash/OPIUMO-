@@ -9,6 +9,7 @@ import fs from "fs";
 import path from "path";
 import { PaperBook, PaperConfig, summarise } from "../src/trading/paperExecution";
 import { constantProductProceeds, unsellable, TrailingStopConfig } from "../src/trading/trailingStop";
+import { venuePricing, bondingCurveProceeds, bondingCurveFloorFraction } from "../src/analysis/venueModels";
 import { evaluateShadows, tally, uncheckedFields, ShadowSet } from "../src/filters/shadowFilters";
 import { loadConfig } from "../src/config";
 
@@ -41,6 +42,36 @@ check("entry proceeds are BELOW the headline share of the pool", (opened as any)
 check("and match the constant-product model", Math.abs((opened as any).entryProceedsSol - (constantProductProceeds(10, 0.05) as number)) < 1e-12);
 check("the raw pool liquidity is also recorded", (opened as any).entryLiquiditySol === 10);
 check("the live verdict travels with the position", (opened as any).liveVerdict === "PASS");
+
+section("VENUE PRICING (APPROVALS 37): Pump.fun on the bonding curve, Raydium on constant product, unknown falls back and says so");
+
+const bv = new PaperBook(CFG, venuePricing);
+const pf = bv.open({ mint: "PF", at: at(0), liquiditySol: 2, liveVerdict: "REJECTED", source: "pumpfun" }).opened!;
+const ray = bv.open({ mint: "RAY", at: at(0), liquiditySol: 2, liveVerdict: "REJECTED", source: "raydium" }).opened!;
+const unk = bv.open({ mint: "UNK", at: at(0), liquiditySol: 2, liveVerdict: "REJECTED" }).opened!;
+check("venue is recorded on the position", pf.venue === "pumpfun" && ray.venue === "raydium" && unk.venue === null);
+check("the pricing model is recorded on every position", /bonding curve/.test(pf.pricingModel) && /constant-product/.test(ray.pricingModel) && /venue unknown/.test(unk.pricingModel));
+const stake = 0.05 * 2;
+check("Pump.fun entry proceeds = curve round trip of a 5%-of-pool stake (fees included)", Math.abs(pf.entryProceedsSol - (bondingCurveProceeds(stake, 2, 2) as number)) < 1e-12);
+check("Raydium entry proceeds = constant product, exactly as before", Math.abs(ray.entryProceedsSol - (constantProductProceeds(2, 0.05) as number)) < 1e-12);
+check("unknown venue = constant product, exactly as before", Math.abs(unk.entryProceedsSol - (constantProductProceeds(2, 0.05) as number)) < 1e-12);
+// Drain both pools to zero after the minimum hold.
+for (const [i, liq] of [[61, 1.0], [62, 0.2], [63, 0], [64, 0]] as [number, number][]) {
+  bv.observe("PF", obs(i, liq)); bv.observe("RAY", obs(i, liq)); bv.observe("UNK", obs(i, liq));
+}
+const pfAfter = [...bv.openPositions(), ...bv.closedPositions()].find((p) => p.mint === "PF")!;
+const rayAfter = bv.closedPositions().find((p) => p.mint === "RAY");
+check("a Raydium position drained to zero hits the -50% hard stop", !!rayAfter && rayAfter.outcome === "closed" && /hard stop/.test(rayAfter.exitReason ?? ""));
+check("a Pump.fun position bought at 2 SOL raised and drained to zero does NOT hit -50%: the curve floors it", pfAfter.outcome === "open", pfAfter.exitReason ?? pfAfter.outcome);
+const floorProceeds = bondingCurveProceeds(stake, 2, 0) as number;
+check("...its last valuation is the curve's floor for that stake (~86% of it at 2 SOL raised; the 1-SOL floor fraction is a slightly lower ~81%)", pfAfter.lastProceedsSol !== null && Math.abs(pfAfter.lastProceedsSol - floorProceeds) < 1e-12 && floorProceeds / stake > 0.85 && floorProceeds / stake < 0.87 && bondingCurveFloorFraction(2) > 0.8 && bondingCurveFloorFraction(2) < 0.82, `${pfAfter.lastProceedsSol} vs ${floorProceeds}, floor(1 SOL)=${bondingCurveFloorFraction(2)}`);
+// A large-raise Pump.fun entry CAN still hit the stop: floor below 50% above 12.4 SOL raised.
+const bigBook = new PaperBook(CFG, venuePricing);
+bigBook.open({ mint: "BIG", at: at(0), liquiditySol: 40, liveVerdict: "REJECTED", source: "pumpfun" });
+for (const [i, liq] of [[61, 10], [62, 0], [63, 0]] as [number, number][]) bigBook.observe("BIG", obs(i, liq));
+const big = bigBook.closedPositions().find((p) => p.mint === "BIG");
+check("a Pump.fun position bought at 40 SOL raised and drained DOES hit -50% (floor there is ~18%)", !!big && big.outcome === "closed" && /hard stop/.test(big.exitReason ?? ""));
+check("a plain ProceedsFn still works as one model for every venue", book().open({ mint: "ONE", at: at(0), liquiditySol: 10, liveVerdict: "PASS", source: "pumpfun" }).opened!.pricingModel === "single model for every venue");
 
 section("UNKNOWN liquidity is refused, never treated as zero or invented");
 

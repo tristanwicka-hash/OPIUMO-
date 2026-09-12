@@ -55,6 +55,21 @@ export interface PaperConfig {
   trailing: TrailingStopConfig;
 }
 
+/**
+ * Pricing per position (NIGHT-PROMPT-V5 Project 2, APPROVALS 37). The book
+ * used to price every venue with constant product on the pool's REAL SOL;
+ * Pump.fun is a bonding curve on VIRTUAL reserves (real + 30 SOL), which puts a
+ * floor under every drain. The factory receives what the position knows at
+ * entry and returns the ProceedsFn every later valuation uses. A plain
+ * ProceedsFn is still accepted: one model for every venue, as before.
+ */
+export type PricingFactory = ((p: { venue: string | null; entryLiquiditySol: number; poolFraction: number }) => { fn: ProceedsFn; model: string }) & { readonly isPricingFactory: true };
+
+/** Brand a per-position pricing function so the book can tell it from a plain ProceedsFn (arity is not reliable: `unsellable` takes no arguments). */
+export function pricingFactory(f: (p: { venue: string | null; entryLiquiditySol: number; poolFraction: number }) => { fn: ProceedsFn; model: string }): PricingFactory {
+  return Object.assign(f, { isPricingFactory: true as const });
+}
+
 export type PaperOutcome =
   | "open"
   | "closed"
@@ -66,6 +81,10 @@ export interface PaperPosition {
   mint: string;
   openedAt: string;
   liveVerdict: LiveVerdict;
+  /** Where the token launched ("pumpfun" | "raydium"), or null when the caller did not say. */
+  venue: string | null;
+  /** Which pricing model values this position - recorded so a P&L figure can never be read without its model. */
+  pricingModel: string;
   entryLiquiditySol: number;
   /** Realizable proceeds at entry. Every percentage is measured against this. */
   entryProceedsSol: number;
@@ -96,11 +115,20 @@ export class PaperBook {
   private readonly positions = new Map<string, PaperPosition>();
   private readonly closed: PaperPosition[] = [];
   private readonly refusals: OpenRefusal[] = [];
+  /** The ProceedsFn each open position is valued with. Functions are not serialisable, so they live here, not on the position. */
+  private readonly pricing = new Map<string, ProceedsFn>();
+  private readonly factory: PricingFactory;
 
   constructor(
-    private readonly config: PaperConfig,
-    private readonly proceeds: ProceedsFn
-  ) {}
+    config: PaperConfig,
+    proceeds: ProceedsFn | PricingFactory
+  ) {
+    this.config = config;
+    this.factory = (proceeds as Partial<PricingFactory>).isPricingFactory === true
+      ? (proceeds as PricingFactory)
+      : pricingFactory(() => ({ fn: proceeds as ProceedsFn, model: "single model for every venue" }));
+  }
+  private readonly config: PaperConfig;
 
   get openCount(): number {
     return this.positions.size;
@@ -119,6 +147,8 @@ export class PaperBook {
     at: string;
     liquiditySol: number | null;
     liveVerdict: LiveVerdict;
+    /** "pumpfun" | "raydium" from the detection event. Omitted = unknown venue, priced with the fallback model. */
+    source?: string | null;
   }): { opened: PaperPosition | null; refusal: OpenRefusal | null } {
     const refuse = (reason: string) => {
       const r = { mint: params.mint, reason };
@@ -142,15 +172,19 @@ export class PaperBook {
       // Unknown liquidity is not zero liquidity. Refuse rather than invent a fill.
       return refuse("liquiditySol is null - could not be read, so no entry price can be established");
     }
-    const entryProceeds = this.proceeds(params.liquiditySol, this.config.poolFraction);
+    const venue = params.source ?? null;
+    const priced = this.factory({ venue, entryLiquiditySol: params.liquiditySol, poolFraction: this.config.poolFraction });
+    const entryProceeds = priced.fn(params.liquiditySol, this.config.poolFraction);
     if (entryProceeds === null || !(entryProceeds > 0)) {
-      return refuse(`position of ${this.config.poolFraction} of the pool realises nothing at entry - unsellable`);
+      return refuse(`position of ${this.config.poolFraction} of the pool realises nothing at entry - unsellable (${priced.model})`);
     }
 
     const position: PaperPosition = {
       mint: params.mint,
       openedAt: params.at,
       liveVerdict: params.liveVerdict,
+      venue,
+      pricingModel: priced.model,
       entryLiquiditySol: params.liquiditySol,
       entryProceedsSol: entryProceeds,
       poolFraction: this.config.poolFraction,
@@ -169,6 +203,7 @@ export class PaperBook {
       } as Position),
     };
     this.positions.set(params.mint, position);
+    this.pricing.set(params.mint, priced.fn);
     return { opened: position, refusal: null };
   }
 
@@ -183,13 +218,14 @@ export class PaperBook {
     if (!p) return null;
 
     p.observations++;
-    const realizable = this.proceeds(obs.liquiditySol, p.poolFraction);
+    const proceeds = this.pricing.get(mint)!;
+    const realizable = proceeds(obs.liquiditySol, p.poolFraction);
     if (realizable !== null) {
       p.peakProceedsSol = Math.max(p.peakProceedsSol, realizable);
       p.lastProceedsSol = realizable;
     }
 
-    const out = step(p.state, obs, this.config.trailing, this.proceeds, p.poolFraction);
+    const out = step(p.state, obs, this.config.trailing, proceeds, p.poolFraction);
     p.state = out.state;
 
     if (out.decision.action === "EXIT") {
@@ -198,12 +234,14 @@ export class PaperBook {
       p.exitProceedsSol = out.decision.proceedsSol;
       p.exitReason = out.decision.reason;
       this.positions.delete(mint);
+      this.pricing.delete(mint);
       this.closed.push(p);
     } else if (out.decision.action === "EXIT_FAILED") {
       p.outcome = "exit-failed";
       p.closedAt = obs.ts;
       p.exitReason = out.decision.reason;
       this.positions.delete(mint);
+      this.pricing.delete(mint);
       this.closed.push(p);
     }
     return p;
@@ -223,6 +261,7 @@ export class PaperBook {
     p.closedAt = at;
     p.exitReason = `abandoned: ${reason} - the stop never fired, so this is NOT an exit and has no exit price`;
     this.positions.delete(mint);
+    this.pricing.delete(mint);
     this.closed.push(p);
     return p;
   }

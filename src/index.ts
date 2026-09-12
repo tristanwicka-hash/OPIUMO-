@@ -16,7 +16,7 @@ import { evaluateSchedule, weeklyOpenHours } from "./schedule/scheduler";
 import { CreditBreaker } from "./rpc/creditBudget";
 import { getRpcMeter } from "./rpc/connection";
 import { PaperBook, summarise } from "./trading/paperExecution";
-import { constantProductProceeds } from "./trading/trailingStop";
+import { venuePricing } from "./analysis/venueModels";
 import { evaluateShadows, ShadowSet } from "./filters/shadowFilters";
 import { JsonlLog } from "./util/logger";
 import { runGraph } from "./graph/graph";
@@ -128,7 +128,9 @@ async function main() {
       includeRejected: paperCfg.includeRejected,
       trailing: paperCfg.trailing,
     },
-    constantProductProceeds
+    // Venue-correct pricing (APPROVALS 37): bonding curve for Pump.fun,
+    // constant product for Raydium. Records only, as before.
+    venuePricing
   );
   if (paperCfg.enabled) {
     logger.warn(

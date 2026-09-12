@@ -156,7 +156,7 @@ export interface WorkerDeps {
   shadow: { enabled: boolean; hasSets: boolean; evaluate: (event: NewPoolEvent, metrics: TokenMetrics, live: "PASS" | "SKIP") => unknown; log: (row: Record<string, unknown>) => void };
   paper: {
     enabled: boolean;
-    open: (p: { mint: string; at: string; liquiditySol: number | null; liveVerdict: "PASS" | "REJECTED" }) => { opened: any | null; refusal: { mint: string; reason: string } | null };
+    open: (p: { mint: string; at: string; liquiditySol: number | null; liveVerdict: "PASS" | "REJECTED"; source?: string | null }) => { opened: any | null; refusal: { mint: string; reason: string } | null };
     openCount: () => number;
     log: (row: Record<string, unknown>) => void;
   };
@@ -202,7 +202,7 @@ export function buildWorkerGraph(d: WorkerDeps): GraphSpec<WorkerState> {
       paperRoute: () => ({}),
       paperOpen: (s) => {
         const { opened, refusal } = d.paper.open({
-          mint: s.event.mint, at: new Date().toISOString(), liquiditySol: s.metrics!.liquiditySol,
+          mint: s.event.mint, at: new Date().toISOString(), liquiditySol: s.metrics!.liquiditySol, source: s.event.source,
           liveVerdict: s.result!.decision === "PASS" ? "PASS" : "REJECTED",
         });
         if (opened) {

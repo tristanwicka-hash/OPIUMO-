@@ -25,6 +25,7 @@
  * keep the constant-product model on real reserves.
  */
 import { ProceedsFn, constantProductProceeds } from "../trading/trailingStop";
+import { pricingFactory } from "../trading/paperExecution";
 
 export const PUMPFUN_VIRTUAL_SOL_OFFSET = 30;
 export const PUMPFUN_INITIAL_VIRTUAL_TOKENS = 1_073_000_000;
@@ -70,3 +71,21 @@ export function venueOf(source: string | undefined | null): Venue | null {
   if (source === "pumpfun" || source === "raydium") return source;
   return null;
 }
+
+/**
+ * The live paper book's pricing (APPROVALS 37, decided 2026-09-12): a position
+ * of `poolFraction` of the pool at entry is a stake of poolFraction * L0 SOL.
+ * Pump.fun values it on the bonding curve from then on (the pool fraction is
+ * irrelevant to the curve, so it is ignored); Raydium and unknown venues keep
+ * constant product on real reserves - unknown is priced with the OLD model
+ * and says so, rather than being guessed onto a curve it may not be on.
+ */
+export const venuePricing = pricingFactory((p: { venue: string | null; entryLiquiditySol: number; poolFraction: number }): { fn: ProceedsFn; model: string } => {
+  const venue = venueOf(p.venue);
+  if (venue === "pumpfun") {
+    const stake = p.poolFraction * p.entryLiquiditySol;
+    const priced = proceedsFor("pumpfun", stake, p.entryLiquiditySol);
+    return { fn: priced.fn, model: priced.model };
+  }
+  return { fn: constantProductProceeds, model: venue === "raydium" ? "constant-product on real reserves" : "constant-product on real reserves (venue unknown - fallback)" };
+});

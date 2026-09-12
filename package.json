@@ -61,6 +61,7 @@
     "test:leak-guard": "ts-node tests/test-no-production-writes.ts",
     "test:credit-budget": "ts-node tests/test-credit-budget.ts",
     "test:supervisor": "ts-node tests/test-supervisor.ts",
+    "test:venue-rerun": "ts-node tests/test-venue-rerun.ts",
     "replay": "ts-node scripts/replay.ts",
     "test:replay": "ts-node tests/test-replay.ts",
     "backtest:trailing-v2": "ts-node scripts/backtest-trailing-v2.ts",
@@ -83,6 +84,7 @@
     "replay:late-entry": "ts-node scripts/late-entry-replay.ts",
     "test:late-entry": "ts-node tests/test-late-entry.ts",
     "replay:venue": "ts-node scripts/venue-replay.ts",
+    "rerun:venue": "ts-node scripts/venue-rerun.ts",
     "test:venue-models": "ts-node tests/test-venue-models.ts",
     "report:what-separates": "ts-node scripts/what-separates.ts"
   },
