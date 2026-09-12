@@ -46,6 +46,7 @@ function detectionDeps(o: { allowed?: boolean; active?: boolean; evict?: boolean
 const detState = (event: any) => ({ event, now: new Date(), budget: null, schedule: null, dropped: null });
 
 (async () => {
+  try {
   section("detection graph: routes and what each records");
   const walked = new Set<string>();
   const runDet = async (o: any) => { const { deps, log, counters } = detectionDeps(o); const r = await runGraph(buildDetectionGraph(deps), detState(ev())); for (const p of r.path) if (p.edge) walked.add(`${p.node}|${p.edge}`); return { r, log, counters }; };
@@ -118,6 +119,13 @@ const detState = (event: any) => ({ event, now: new Date(), budget: null, schedu
   const wMissing = wDeclared.filter((d) => !wWalked.has(d));
   check(`every declared worker edge was walked (${wWalked.size}/${wDeclared.length})`, wMissing.length === 0, wMissing.join(", "));
 
+  } catch (err: any) {
+    // A graph that validateGraph refuses (an unreachable node, an edge to nowhere)
+    // throws before any assertion runs. That is the guard working - but a suite
+    // that dies without a Total line reads as "did not run", so count it here.
+    fail++;
+    console.log(`  FAIL: the suite threw before finishing -- ${err?.message ?? err}`);
+  }
   console.log(`\nTotal: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();
