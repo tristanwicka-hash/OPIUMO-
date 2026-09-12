@@ -76,7 +76,9 @@
     "test:graph": "ts-node tests/test-graph.ts",
     "test:eval-goldens": "ts-node tests/test-eval-goldens.ts",
     "test:pipeline-graph": "ts-node tests/test-pipeline-graph.ts",
-    "test:graph-docs": "ts-node tests/test-graph-docs.ts"
+    "test:graph-docs": "ts-node tests/test-graph-docs.ts",
+    "replay:late-entry": "ts-node scripts/late-entry-replay.ts",
+    "test:late-entry": "ts-node tests/test-late-entry.ts"
   },
   "dependencies": {
     "@drift-labs/sdk": "^2.156.0",
