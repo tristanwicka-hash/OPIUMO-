@@ -25,6 +25,17 @@ export interface PoolWatcherOptions {
   healthCheckIntervalMs?: number;
   /** How many recent signatures to remember for dedup, so a redelivered/replayed log doesn't emit twice. Default 2000. */
   maxSeenSignatures?: number;
+  /**
+   * Cap on each unsubscribe during stop(). Default 10s.
+   *
+   * On 2026-09-12 at 00:02 UTC the websocket died. checkHealth() called
+   * restart(), stop() awaited removeOnLogsListener on the dead socket, and
+   * that promise never settled - so start() never ran, and because stop()
+   * had already cleared the health timer, nothing ever tried again. The bot
+   * stayed up and blind for seven hours. An unsubscribe that does not answer
+   * inside this cap is abandoned and the restart proceeds.
+   */
+  unsubscribeTimeoutMs?: number;
 }
 
 /**
@@ -51,6 +62,7 @@ export class PoolWatcher extends EventEmitter {
   private readonly staleConnectionThresholdMs: number;
   private readonly healthCheckIntervalMs: number;
   private readonly maxSeenSignatures: number;
+  private readonly unsubscribeTimeoutMs: number;
 
   constructor(connection: Connection = getConnection(), options: PoolWatcherOptions = {}) {
     super();
@@ -58,6 +70,19 @@ export class PoolWatcher extends EventEmitter {
     this.staleConnectionThresholdMs = options.staleConnectionThresholdMs ?? 30_000;
     this.healthCheckIntervalMs = options.healthCheckIntervalMs ?? 10_000;
     this.maxSeenSignatures = options.maxSeenSignatures ?? 2000;
+    this.unsubscribeTimeoutMs = options.unsubscribeTimeoutMs ?? 10_000;
+  }
+
+  /** An unsubscribe on a dead socket never answers. Wait at most the cap, then move on and say so. */
+  private async unsubscribeCapped(label: string, p: Promise<unknown>): Promise<void> {
+    let timer: NodeJS.Timeout | null = null;
+    const capped = new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), this.unsubscribeTimeoutMs); });
+    try {
+      const winner = await Promise.race([p.then(() => "done" as const, (err: any) => { logger.warn(`${label}: unsubscribe failed (${err?.message || err}) - continuing`); return "done" as const; }), capped]);
+      if (winner === "timeout") logger.warn(`${label}: unsubscribe did not answer within ${this.unsubscribeTimeoutMs}ms - abandoning it (the socket is probably dead) and continuing`);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   start(): void {
@@ -101,11 +126,11 @@ export class PoolWatcher extends EventEmitter {
       this.healthCheckTimer = null;
     }
     for (const id of this.subscriptionIds) {
-      await this.connection.removeOnLogsListener(id);
+      await this.unsubscribeCapped(`logs subscription ${id}`, this.connection.removeOnLogsListener(id));
     }
     this.subscriptionIds = [];
     if (this.slotSubscriptionId !== null) {
-      await this.connection.removeSlotChangeListener(this.slotSubscriptionId);
+      await this.unsubscribeCapped("slot subscription", this.connection.removeSlotChangeListener(this.slotSubscriptionId));
       this.slotSubscriptionId = null;
     }
     this.running = false;
@@ -124,10 +149,17 @@ export class PoolWatcher extends EventEmitter {
     }
   }
 
+  private restarting = false;
+
+  /** stop() then start(); a failing stop() no longer prevents the start(). One restart at a time. */
   private restart(): void {
+    if (this.restarting) return;
+    this.restarting = true;
     this.stop()
+      .catch((err) => logger.error(`Watcher stop() failed during restart (${err?.message || err}) - starting anyway`))
       .then(() => this.start())
-      .catch((err) => logger.error(`Failed to restart watcher: ${err?.message || err}`));
+      .catch((err) => logger.error(`Failed to restart watcher: ${err?.message || err}`))
+      .finally(() => { this.restarting = false; });
   }
 
   private markSeen(signature: string): boolean {

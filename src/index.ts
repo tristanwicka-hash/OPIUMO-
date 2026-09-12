@@ -291,6 +291,13 @@ async function main() {
 
   // Periodic visibility into whether the queue is keeping up. Silent when idle.
   const queueStatsTimer = setInterval(() => {
+    // The breaker used to book the meter's spend only when a token was
+    // detected. On 2026-09-12 the watcher went blind for seven hours while the
+    // outcome tracker kept spending 3-5k credits/h, and the ledger recorded 275
+    // credits for the day. Booking here too keeps the ledger honest when
+    // nothing is being detected. Budgets are unchanged; this is accounting.
+    const snap = getRpcMeter()?.snapshot(Date.now());
+    if (snap) { breaker.chargeFromMeter(snap.credits, new Date()); breaker.persistThrottled(Date.now()); }
     const s = queue.stats();
     if (s.running > 0 || s.queued > 0) {
       logger.info(

@@ -357,6 +357,37 @@ async function main() {
     await watcher.stop();
   }
 
+  console.log("\n-- stop() on a DEAD socket: unsubscribe never answers, restart must still happen --");
+  {
+    // The 2026-09-12 outage: removeOnLogsListener on a dead websocket never settles.
+    let onLogsCalls = 0;
+    const dead = {
+      onLogs: () => ++onLogsCalls,
+      onSlotChange: () => 99,
+      removeOnLogsListener: () => new Promise<void>(() => undefined),
+      removeSlotChangeListener: () => new Promise<void>(() => undefined),
+    } as any;
+    const watcher = new PoolWatcher(dead, { unsubscribeTimeoutMs: 40, healthCheckIntervalMs: 60_000 });
+    watcher.start();
+    const before = onLogsCalls;
+    const t0 = Date.now();
+    await watcher.stop();
+    const took = Date.now() - t0;
+    check("stop() resolves despite unsubscribes that never answer", true);
+    check(`...within roughly the cap per subscription (3 unsubscribes x 40ms), not forever: ${took}ms`, took < 1000);
+    // restart() is private; exercised through checkHealth() with a stale slot.
+    (watcher as any).lastSlotSeenAt = 0;
+    (watcher as any).running = true;
+    (watcher as any).subscriptionIds = [1, 2];
+    (watcher as any).slotSubscriptionId = 99;
+    (watcher as any).checkHealth();
+    await new Promise((r) => setTimeout(r, 400));
+    check(`after a stale-connection restart on a dead socket, start() ran again (subscriptions ${before} -> ${onLogsCalls})`, onLogsCalls > before);
+    check("a second checkHealth during a restart does not stack another restart", ((): boolean => { (watcher as any).restarting = true; const c = onLogsCalls; (watcher as any).checkHealth(); return onLogsCalls === c; })());
+    (watcher as any).restarting = false;
+    await watcher.stop();
+  }
+
   console.log(`\nOffline checks: ${pass} passed, ${fail} failed`);
 
   console.log("\n-- live subscription smoke test --");
