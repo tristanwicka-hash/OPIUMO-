@@ -100,6 +100,7 @@ const suites = [
   { name: "Detection + worker graphs (offline)", script: "tests/test-pipeline-graph.ts" },
   { name: "Graph docs in README are current (offline)", script: "tests/test-graph-docs.ts" },
   { name: "Late-entry replay (offline)", script: "tests/test-late-entry.ts" },
+  { name: "Venue slippage models (offline)", script: "tests/test-venue-models.ts" },
   { name: "Schedule savings analysis (offline)", script: "tests/test-schedule-savings.ts" },
   { name: "Outcome backlog analysis (offline)", script: "tests/test-outcome-backlog.ts" },
   { name: "Paper execution + shadow filters (offline)", script: "tests/test-paper-execution.ts" },
