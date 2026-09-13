@@ -337,6 +337,12 @@ export interface AppConfig {
   sources: SourcesConfig;
   polling: PollingConfig;
   delayProbe: DelayProbeConfig;
+  /**
+   * The detection loop. Optional so an older config file still loads and still
+   * detects - absent means ON, which is the behaviour every existing config had
+   * before this flag existed. Only an explicit false switches detection off.
+   */
+  watcher?: { enabled: boolean };
   outcomeTracker: OutcomeTrackerConfig;
   watchlist: WatchlistConfig;
   logging: LoggingConfig;

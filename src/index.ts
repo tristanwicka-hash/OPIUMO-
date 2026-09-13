@@ -401,8 +401,21 @@ async function main() {
   }, 30_000);
   queueStatsTimer.unref?.();
 
-  watcher.start();
-  logger.info("Watcher running. Waiting for new pools... (Ctrl+C to stop)");
+  // The detection loop is the expensive half of this bot and, since APPROVALS 52,
+  // the optional half: the scanner's launch feed comes from PumpPortal for free.
+  // Outcome tracking above is deliberately NOT conditional on this - its pending
+  // checkpoints still restore and still fire, because an outcome not captured
+  // when it happens costs ~1000 credits to reconstruct later, if it can be at all.
+  if (config.watcher?.enabled === false) {
+    logger.info(
+      "*** DETECTION LOOP OFF *** (config watcher.enabled=false, APPROVALS 52). " +
+        "No program-log subscription, no getParsedTransaction per create, no metrics pipeline. " +
+        "Outcome tracking continues for tokens already pending; nothing new will enter it from here."
+    );
+  } else {
+    watcher.start();
+    logger.info("Watcher running. Waiting for new pools... (Ctrl+C to stop)");
+  }
 
   process.on("SIGINT", async () => {
     logger.info("Shutting down...");

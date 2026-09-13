@@ -95,7 +95,11 @@
     "report:creator-verdict": "ts-node scripts/creator-verdict.ts",
     "test:creator-lookahead": "ts-node tests/test-creator-lookahead.ts",
     "cost:scanner": "ts-node scripts/scanner-cost.ts",
-    "cost:feed": "ts-node scripts/feed-cost.ts"
+    "cost:feed": "ts-node scripts/feed-cost.ts",
+    "check:stream-billing": "ts-node scripts/stream-billing-check.ts",
+    "test:stream-billing": "ts-node tests/test-stream-billing.ts",
+    "cost:depth": "ts-node scripts/depth-calibration.ts",
+    "test:depth-calibration": "ts-node tests/test-depth-calibration.ts"
   },
   "dependencies": {
     "@drift-labs/sdk": "^2.156.0",
