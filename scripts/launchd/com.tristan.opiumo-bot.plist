@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  The OPIUMO spot sniper itself. Runs from dist/, so npm run build must precede any restart. The supervisor agent below restarts it on a silent websocket; KeepAlive here covers the process simply dying.
+	  Load/unload commands: APPROVALS 47. Do not load this by editing the file;
+	  use the launchctl block there so every loop is started the same way.
+	  Paths are absolute and point at ~/Projects/TristansVault (APPROVALS 33).
+	-->
+	<key>Label</key>
+	<string>com.tristan.opiumo-bot</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/node</string>
+		<string>/Users/Tristan/Projects/TristansVault/OPIUMO-/dist/src/index.js</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>/Users/Tristan/Projects/TristansVault/OPIUMO-</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<!-- launchd gives an agent a minimal PATH; node and npx must both be findable. -->
+		<key>PATH</key>
+		<string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>HOME</key>
+		<string>/Users/Tristan</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>30</integer>
+	<key>StandardOutPath</key>
+	<string>/Users/Tristan/Projects/TristansVault/OPIUMO-/logs/com.tristan.opiumo-bot.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/Tristan/Projects/TristansVault/OPIUMO-/logs/com.tristan.opiumo-bot.log</string>
+	<key>ProcessType</key>
+	<string>Background</string>
+</dict>
+</plist>
