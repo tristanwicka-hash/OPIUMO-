@@ -87,7 +87,10 @@
     "rerun:venue": "ts-node scripts/venue-rerun.ts",
     "test:venue-models": "ts-node tests/test-venue-models.ts",
     "report:what-separates": "ts-node scripts/what-separates.ts",
-    "walk-forward:exit": "ts-node scripts/walk-forward-exit.ts"
+    "walk-forward:exit": "ts-node scripts/walk-forward-exit.ts",
+    "creators:backfill": "ts-node scripts/backfill-creators.ts",
+    "creators:edge": "ts-node scripts/creator-edge.ts",
+    "test:creators": "ts-node tests/test-creator-reputation.ts"
   },
   "dependencies": {
     "@drift-labs/sdk": "^2.156.0",

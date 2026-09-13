@@ -154,6 +154,13 @@
       "persistenceObservations": 2,
       "minHoldMs": 60000
     },
+    "creatorReputation": {
+      "_comment": "Creator wallet reputation (trading edge prompt, 2026-09-13). Every Pump.fun coin is launched by a wallet; this refuses a launch whose creator drained most of their PREVIOUS launches. It is the only candidate signal available at t=0 - every metric APPROVALS 38 tested only exists after the token has already moved. Costs ZERO extra RPC calls: the creator is the launch transaction fee payer, which the watcher already resolves for devWalletPercent and now records on every decision row. OFF until the recorded test (npm run creators:edge) shows it separates winners from losers with 30+ launches per group; as of 2026-09-13 it does not, because one day of launches contains almost no repeat creators. Turning it on is a threshold decision and belongs in APPROVALS.",
+      "enabled": false,
+      "minPriorLaunches": 2,
+      "maxPriorDrainRate": 0.5,
+      "storeFile": "logs/creators.jsonl"
+    },
     "logFile": "logs/paper-positions.jsonl"
   },
   "shadowFilters": {

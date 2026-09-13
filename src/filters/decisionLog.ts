@@ -64,6 +64,9 @@ export class DecisionLog {
       source: result.source,
       mint: result.mint,
       signature: result.signature,
+      // Zero extra RPC: the watcher already resolved this to compute devWalletPercent.
+      // Recorded so creator reputation can be built from the log rather than re-fetched.
+      creator: result.creator ?? null,
       reasons: result.reasons,
       metrics: result.metrics,
       evaluatedAt: result.evaluatedAt,

@@ -8,6 +8,14 @@ export interface FilterResult {
   mint: string;
   source: string;
   signature: string;
+  /**
+   * The wallet that launched this token, when the watcher could identify it
+   * (the launch transaction's fee payer). Carried here so it reaches the
+   * decision log: it was already resolved to compute devWalletPercent and was
+   * previously thrown away, which is why creator history could not be
+   * backfilled for free. Recording it costs ZERO extra RPC calls.
+   */
+  creator?: string | null;
   decision: Decision;
   /** Every failed rule, in the order the rules are evaluated. Empty when decision === "PASS". */
   reasons: string[];
@@ -203,6 +211,7 @@ export function evaluateFilters(
     mint: event.mint,
     source: event.source,
     signature: event.signature,
+    creator: event.creator ?? null,
     decision: reasons.length === 0 ? "PASS" : "SKIP",
     reasons,
     metrics,

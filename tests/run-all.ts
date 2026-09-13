@@ -109,6 +109,7 @@ const suites = [
   { name: "Liveness heartbeat + supervisor decisions (offline)", script: "tests/test-supervisor.ts" },
   { name: "Venue re-run: pricing, exit rules on SOL raised, pyramid, late entry (offline)", script: "tests/test-venue-rerun.ts" },
   { name: "Walk-forward exit rule (offline)", script: "tests/test-walk-forward-exit.ts" },
+  { name: "Creator wallet reputation (offline)", script: "tests/test-creator-reputation.ts" },
   { name: "Replay harness (offline)", script: "tests/test-replay.ts" },
   { name: "Shadow-filter report (offline)", script: "tests/test-shadow-report.ts" },
   { name: "Log integrity invariants (offline)", script: "tests/test-log-integrity.ts" },
