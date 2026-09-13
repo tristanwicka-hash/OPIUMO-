@@ -129,7 +129,38 @@ section("the shipped config leaves it OFF");
   const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "config", "default.json"), "utf-8"));
   const d = cfg.paperExecution?.drawdown;
   check("the config carries a drawdown block", !!d);
-  check("it is DISABLED in the shipped config - switching it on is Tristan's decision", d?.enabled === false);
+  check("it is DISABLED in the shipped config - decided (a) by Tristan 2026-09-14 while the book collects", d?.enabled === false);
+
+  // THE STANDING RULE, ENFORCED (APPROVALS 50a, decided 2026-09-14).
+  //
+  //   The drawdown guard goes on BEFORE any flag that permits real money.
+  //   Before, never after.
+  //
+  // This is the assertion that makes it a rule rather than a note. It is
+  // deliberately expressed as an implication - guard off IMPLIES money off -
+  // so it stays green today (both off) and goes red the moment someone flips a
+  // money flag without switching the guard on first. That is the exact
+  // sequence the rule exists to prevent, and it is the one nobody will
+  // remember to check on the day it happens.
+  const moneyOn = cfg.trading?.enabled === true || cfg.perps?.enabled === true || cfg.fundingArb?.enabled === true;
+  const paperOff = cfg.trading?.paperTrading === false;
+  const guardOn = d?.enabled === true;
+  check(
+    "STANDING RULE: no real-money flag may be on while the drawdown guard is off",
+    !(moneyOn && !guardOn),
+    `trading.enabled=${cfg.trading?.enabled} perps=${cfg.perps?.enabled} fundingArb=${cfg.fundingArb?.enabled} guard=${d?.enabled}`
+  );
+  check(
+    "STANDING RULE: paperTrading may not be turned off while the drawdown guard is off",
+    !(paperOff && !guardOn),
+    `paperTrading=${cfg.trading?.paperTrading} guard=${d?.enabled}`
+  );
+  // And the rule must be written where it will be READ at that moment, not
+  // only in APPROVALS where nobody is looking when they edit a config value.
+  check("the rule is written beside the flag it governs, in config/default.json",
+    /DRAWDOWN GUARD GOES ON FIRST/i.test(cfg.trading?._comment ?? ""));
+  check("and in the repo's working agreement",
+    /DRAWDOWN GUARD GOES ON BEFORE THE MONEY DOES/i.test(fs.readFileSync(path.join(__dirname, "..", "CLAUDE.md"), "utf-8")));
   check("its limits are positive numbers, because they are LOSS limits", d.maxDailyLoss > 0 && d.maxTotalLoss > 0 && d.maxPeakDrawdown > 0);
   check("and the unit is stated, so a SOL limit is never read as dollars", typeof d.unit === "string" && d.unit.length > 0);
 }

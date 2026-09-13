@@ -27,6 +27,23 @@ conventions.
    ever at risk when BOTH `trading.enabled: true` AND
    `trading.paperTrading: false`. Never flip any of these as a side effect
    of another change.
+
+   **THE DRAWDOWN GUARD GOES ON BEFORE THE MONEY DOES.** Standing rule,
+   decided by Tristan 2026-09-14 (APPROVALS 50a). Before either of those
+   flags is touched, `paperExecution.drawdown.enabled` must be `true` and the
+   bot must have logged `*** DRAWDOWN GUARD ON ***` at startup. Before, never
+   after — the day a bot goes live is the worst possible day to be switching
+   on a loss limit for the first time, and it is the day everyone is thinking
+   about something else.
+
+   This exists because on 2026-09-13 an audit found `src/risk/drawdownGuard.ts`
+   was imported by nothing but its own test: 172 lines of loss-limit logic,
+   copied into three bots, and not one of them called it. Every test passed,
+   every time. A correct component nothing calls is indistinguishable from a
+   working safety net in a green suite. It is wired now, and deliberately
+   disabled while the book is only collecting paper data —
+   `tests/test-drawdown-wiring.ts` fails if `trading.enabled` is ever true
+   while the guard is off, so the rule is enforced rather than remembered.
 2. **All tunables live in `config/default.json`.** Never hardcode a
    threshold, size, interval, or URL in source. Secrets live in `.env` only
    (never committed - this repo is PUBLIC).
