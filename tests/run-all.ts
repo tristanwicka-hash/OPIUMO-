@@ -110,6 +110,7 @@ const suites = [
   { name: "Venue re-run: pricing, exit rules on SOL raised, pyramid, late entry (offline)", script: "tests/test-venue-rerun.ts" },
   { name: "Walk-forward exit rule (offline)", script: "tests/test-walk-forward-exit.ts" },
   { name: "Creator wallet reputation (offline)", script: "tests/test-creator-reputation.ts" },
+  { name: "Creator reputation: the lookahead trap, the shape gate, the ceiling", script: "tests/test-creator-lookahead.ts" },
   { name: "Drawdown kill switch (offline)", script: "tests/test-drawdown-guard.ts" },
   { name: "Drawdown kill switch is WIRED, not just correct", script: "tests/test-drawdown-wiring.ts" },
   { name: "Replay harness (offline)", script: "tests/test-replay.ts" },

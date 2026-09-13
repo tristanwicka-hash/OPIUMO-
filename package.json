@@ -91,7 +91,9 @@
     "creators:backfill": "ts-node scripts/backfill-creators.ts",
     "creators:edge": "ts-node scripts/creator-edge.ts",
     "test:creators": "ts-node tests/test-creator-reputation.ts",
-    "test:drawdown-wiring": "ts-node tests/test-drawdown-wiring.ts"
+    "test:drawdown-wiring": "ts-node tests/test-drawdown-wiring.ts",
+    "report:creator-verdict": "ts-node scripts/creator-verdict.ts",
+    "test:creator-lookahead": "ts-node tests/test-creator-lookahead.ts"
   },
   "dependencies": {
     "@drift-labs/sdk": "^2.156.0",
