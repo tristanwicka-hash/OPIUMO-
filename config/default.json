@@ -148,7 +148,9 @@
     "raisedTakeProfit": {
       "_comment": "APPROVALS 43, DECIDED (a) BY TRISTAN 2026-09-12, paper book only, records only. Pump.fun positions exit on whichever fires first: the pool's real SOL falling 30% below its level at entry (2 consecutive readings after a 60 s hold) or the position's value reaching +50%. The trailing value stop above stays for every other venue and for comparison. Why: under bonding-curve pricing a -50% VALUE stop cannot fire on a drain for 87.5% of entries (curve floor above 50% below 12.4 SOL raised), so it exits 10 of 92 drains; a stop on SOL raised has no floor. Walk-forward (reports/walk-forward-exit-2026-09-12.md, 561 closes split chronologically): chosen on the first half it scored -15.7% vs the current stop's -22.6% on the second (+6.9% of stake out of sample); chosen on the second half it scored -1.6% vs -23.0% on the first (+21.4%). It still loses; it is the least-losing rule the data shows. Re-read after a week of positions under it. Set enabled=false to revert every NEW position to the trailing stop (open positions keep the rule they opened under).",
       "enabled": true,
-      "venues": ["pumpfun"],
+      "venues": [
+        "pumpfun"
+      ],
       "raisedDropPercent": 30,
       "takeProfitPercent": 50,
       "persistenceObservations": 2,
@@ -161,7 +163,15 @@
       "maxPriorDrainRate": 0.5,
       "storeFile": "logs/creators.jsonl"
     },
-    "logFile": "logs/paper-positions.jsonl"
+    "logFile": "logs/paper-positions.jsonl",
+    "drawdown": {
+      "_comment": "The drawdown kill switch. DISABLED, and switching it on is Tristan's decision (APPROVALS 50). Wired into PaperBook on 2026-09-13 after an audit found src/risk/drawdownGuard.ts was imported by nothing except its own test: 172 lines of loss-limit logic, copied into three repos, and not one bot called it. A kill switch nothing is wired to is a document about a safety net, not a safety net. With enabled=false the book behaves exactly as it did before. With enabled=true, once a limit is breached the book opens NO further paper positions and the halt survives a restart, which means it will stop the paper book collecting data - that is the whole point, and it is why it is a decision rather than a default. Limits are in SOL and are positive numbers because they are LOSS limits.",
+      "enabled": false,
+      "maxDailyLoss": 5,
+      "maxTotalLoss": 25,
+      "maxPeakDrawdown": 15,
+      "unit": "SOL"
+    }
   },
   "shadowFilters": {
     "_comment": "MEASUREMENT ONLY - evaluates looser threshold sets on the SAME already-fetched metrics and records what each would have decided. Changes no behaviour; the live filters still control everything. Costs ZERO additional RPC calls by construction: evaluateFilters takes thresholds as a parameter, so a shadow set is a second call on the same in-memory object, and the module is synchronous so it cannot await a fetch. Any field the live path did not fetch stays null and is recorded as UNCHECKED - it is never fetched to fill the gap. Each set overrides only the named keys of filters; everything else is inherited from the live config, so a shadow set stays honest when the live thresholds change.",

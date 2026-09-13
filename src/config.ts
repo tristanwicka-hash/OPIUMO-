@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import dotenv from "dotenv";
 import { validateRaisedTakeProfit } from "./trading/raisedExit";
+import { validateDrawdownConfig } from "./risk/drawdownGuard";
 import { ScheduleConfig, DEFAULT_SCHEDULE, validateSchedule } from "./schedule/scheduler";
 import { CreditBudgetConfig, DEFAULT_CREDIT_BUDGET, validateCreditBudget } from "./rpc/creditBudget";
 import { SupervisorConfig, DEFAULT_SUPERVISOR, validateSupervisor } from "./supervisor/supervisor";
@@ -239,6 +240,18 @@ export interface PaperExecutionConfig {
     takeProfitPercent: number;
     persistenceObservations: number;
     minHoldMs: number;
+  };
+  /**
+   * The drawdown kill switch (APPROVALS 50). Optional so a config written
+   * before this existed still loads; absent or disabled means the paper book
+   * behaves exactly as it did before it was wired.
+   */
+  drawdown?: {
+    enabled: boolean;
+    maxDailyLoss: number;
+    maxTotalLoss: number;
+    maxPeakDrawdown: number;
+    unit: string;
   };
   logFile: string;
 }
@@ -502,6 +515,12 @@ function validate(config: AppConfig): void {
     if (config.outcomeTracker.sampleRate <= 0 || config.outcomeTracker.sampleRate > 1) {
       errors.push("outcomeTracker.sampleRate must be > 0 and <= 1");
     }
+  }
+  if (config.paperExecution?.drawdown?.enabled) {
+    // Validated ONLY when enabled, so a disabled block with placeholder numbers
+    // cannot stop the bot booting - but a switched-on guard with a nonsense
+    // limit must refuse to start rather than silently never firing.
+    errors.push(...validateDrawdownConfig(config.paperExecution.drawdown));
   }
   if (config.paperExecution?.raisedTakeProfit?.enabled) {
     errors.push(...validateRaisedTakeProfit(config.paperExecution.raisedTakeProfit));

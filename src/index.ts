@@ -16,6 +16,8 @@ import { evaluateSchedule, weeklyOpenHours } from "./schedule/scheduler";
 import { CreditBreaker } from "./rpc/creditBudget";
 import { getRpcMeter } from "./rpc/connection";
 import { PaperBook, summarise } from "./trading/paperExecution";
+import { loadDrawdownState, saveDrawdownState, DRAWDOWN_STATE_FILE } from "./risk/drawdownStore";
+import { DrawdownState } from "./risk/drawdownGuard";
 import { venuePricing } from "./analysis/venueModels";
 import { evaluateShadows, ShadowSet } from "./filters/shadowFilters";
 import { JsonlLog } from "./util/logger";
@@ -120,6 +122,21 @@ async function main() {
    * calls. See config paperExecution._comment.
    */
   const paperCfg = config.paperExecution;
+
+  // Load any persisted halt BEFORE the book is built. An unreadable state file
+  // is fatal on purpose when the guard is on: starting from zero would clear a
+  // halt, which is the failure the guard exists to prevent.
+  let drawdownStart: DrawdownState | undefined;
+  if (paperCfg.drawdown?.enabled) {
+    const loaded = loadDrawdownState(DRAWDOWN_STATE_FILE);
+    if (!loaded.ok) { logger.error(`DRAWDOWN GUARD: ${loaded.reason}`); throw new Error(loaded.reason); }
+    drawdownStart = loaded.state;
+    logger.warn(
+      `*** DRAWDOWN GUARD ON *** limits ${paperCfg.drawdown.maxDailyLoss}/day, ` +
+      `${paperCfg.drawdown.maxTotalLoss} total, ${paperCfg.drawdown.maxPeakDrawdown} off peak (${paperCfg.drawdown.unit}). ` +
+      (loaded.fresh ? "No prior state." : `Resumed: total ${loaded.state.totalPnl}, ${loaded.state.halted ? "HALTED - " + loaded.state.halted.detail : "not halted"}.`)
+    );
+  }
   const paperLog = new JsonlLog(paperCfg.logFile, config.logging.maxLogFileSizeMB);
   const paperBook = new PaperBook(
     {
@@ -129,6 +146,11 @@ async function main() {
       trailing: paperCfg.trailing,
       // APPROVALS 43 (2026-09-12): Pump.fun positions exit on raised-stop OR take-profit. Records only.
       raisedTakeProfit: paperCfg.raisedTakeProfit ?? null,
+      // APPROVALS 50: the drawdown kill switch. Disabled in the shipped config,
+      // so this changes nothing until Tristan turns it on. The persisted state
+      // is loaded from disk so a halt survives a restart - a kill switch you
+      // can clear by restarting is not a kill switch.
+      drawdown: paperCfg.drawdown?.enabled ? { ...paperCfg.drawdown, state: drawdownStart } : null,
     },
     // Venue-correct pricing (APPROVALS 37): bonding curve for Pump.fun,
     // constant product for Raydium. Records only, as before.
@@ -178,6 +200,15 @@ async function main() {
       const after = paperBook.observe(mint, { ts: atIso, liquiditySol });
       if (after && after.outcome !== "open") {
         paperLog.append({ event: "paper-close", ...after, state: undefined });
+        // Persist the halt state on every close, not on shutdown. A guard whose
+        // state is only written when the process exits cleanly loses it in the
+        // one case that matters most - a crash right after a big loss.
+        const ds = paperBook.drawdownState;
+        if (ds) {
+          saveDrawdownState(ds, DRAWDOWN_STATE_FILE);
+          const d = paperBook.drawdownDecision;
+          if (d?.halted) logger.error(`*** ${d.detail} *** No further paper positions will be opened. Clearing it is a human decision (see src/risk/drawdownGuard.ts clearHalt).`);
+        }
       }
     },
   });

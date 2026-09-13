@@ -111,6 +111,7 @@ const suites = [
   { name: "Walk-forward exit rule (offline)", script: "tests/test-walk-forward-exit.ts" },
   { name: "Creator wallet reputation (offline)", script: "tests/test-creator-reputation.ts" },
   { name: "Drawdown kill switch (offline)", script: "tests/test-drawdown-guard.ts" },
+  { name: "Drawdown kill switch is WIRED, not just correct", script: "tests/test-drawdown-wiring.ts" },
   { name: "Replay harness (offline)", script: "tests/test-replay.ts" },
   { name: "Shadow-filter report (offline)", script: "tests/test-shadow-report.ts" },
   { name: "Log integrity invariants (offline)", script: "tests/test-log-integrity.ts" },

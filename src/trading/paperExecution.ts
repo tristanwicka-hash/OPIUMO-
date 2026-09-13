@@ -42,6 +42,7 @@ import {
   step,
 } from "./trailingStop";
 import { RaisedTakeProfitConfig, RaisedState, initRaisedState, stepRaised } from "./raisedExit";
+import { DrawdownConfig, DrawdownState, DrawdownDecision, applyRealised, evaluateDrawdown, markHalted, emptyState } from "../risk/drawdownGuard";
 
 /** What the LIVE filters decided. Recorded so paper results can be split by it. */
 export type LiveVerdict = "PASS" | "REJECTED";
@@ -60,6 +61,23 @@ export interface PaperConfig {
    * or disabled = every position keeps the trailing stop, as before.
    */
   raisedTakeProfit?: (RaisedTakeProfitConfig & { enabled: boolean }) | null;
+  /**
+   * The drawdown kill switch. Omitted or `enabled: false` = no halt, which is
+   * exactly how it behaved before this was wired.
+   *
+   * ## Why this appeared here on 2026-09-13
+   *
+   * An audit asked, of every component, "has this ever actually run?" and found
+   * that `src/risk/drawdownGuard.ts` - 172 lines of loss-limit logic, copied
+   * verbatim into three repos - was imported by NOTHING except its own test.
+   * All three bots record positions; not one of them called the guard that is
+   * meant to stop them. A kill switch nothing is wired to is not a safety net,
+   * it is a document about one, and it passed every test in that state.
+   *
+   * It is wired here and defaulted OFF, so nothing about tonight's run changes.
+   * Switching it on is a config change and Tristan's decision (APPROVALS).
+   */
+  drawdown?: (DrawdownConfig & { state?: DrawdownState }) | null;
 }
 
 export type ExitRuleName = "trailing" | "raised-stop-or-take-profit";
@@ -131,6 +149,9 @@ export class PaperBook {
   /** The ProceedsFn each open position is valued with. Functions are not serialisable, so they live here, not on the position. */
   private readonly pricing = new Map<string, ProceedsFn>();
   private readonly factory: PricingFactory;
+  /** Null when the guard is absent or disabled. */
+  private drawdown: DrawdownState | null = null;
+  private lastDrawdownDecision: DrawdownDecision | null = null;
 
   constructor(
     config: PaperConfig,
@@ -140,7 +161,18 @@ export class PaperBook {
     this.factory = (proceeds as Partial<PricingFactory>).isPricingFactory === true
       ? (proceeds as PricingFactory)
       : pricingFactory(() => ({ fn: proceeds as ProceedsFn, model: "single model for every venue" }));
+    if (config.drawdown?.enabled) {
+      // The state is SUPPLIED by the caller, loaded from disk. A guard that
+      // starts fresh on every construction is one a restart clears, which is
+      // the failure the guard module's own header calls out.
+      this.drawdown = config.drawdown.state ?? emptyState(new Date());
+    }
   }
+
+  /** The halt state, so the caller can persist it. Null when the guard is off. */
+  get drawdownState(): DrawdownState | null { return this.drawdown; }
+  /** The most recent verdict, for logging. Null until a close has been recorded. */
+  get drawdownDecision(): DrawdownDecision | null { return this.lastDrawdownDecision; }
   private readonly config: PaperConfig;
 
   get openCount(): number {
@@ -168,6 +200,14 @@ export class PaperBook {
       this.refusals.push(r);
       return { opened: null, refusal: r };
     };
+
+    // The halt is checked FIRST, before any other refusal reason. A halted book
+    // must not open a position for any reason, and the reason string is
+    // distinct so a halt never reads like a slow night.
+    if (this.drawdown && this.config.drawdown?.enabled) {
+      const d = evaluateDrawdown(this.drawdown, this.config.drawdown, new Date(params.at));
+      if (d.halted) return refuse(`DRAWDOWN HALT - ${d.detail}`);
+    }
 
     if (params.liveVerdict === "REJECTED" && !this.config.includeRejected) {
       return refuse("live filters rejected it and includeRejected is false");
@@ -263,6 +303,16 @@ export class PaperBook {
       this.positions.delete(mint);
       this.pricing.delete(mint);
       this.closed.push(p);
+      // Realised result feeds the guard. Only a close with a real exit price
+      // counts - an exit-failed position has no realised number, and treating
+      // its absence as a zero would make a broken exit look like a flat trade.
+      if (this.drawdown && this.config.drawdown?.enabled && p.exitProceedsSol !== null) {
+        const at = new Date(obs.ts);
+        this.drawdown = applyRealised(this.drawdown, p.exitProceedsSol - p.entryProceedsSol, at);
+        const d = evaluateDrawdown(this.drawdown, this.config.drawdown, at);
+        this.lastDrawdownDecision = d;
+        this.drawdown = markHalted(this.drawdown, d, at);
+      }
     } else if (out.decision.action === "EXIT_FAILED") {
       p.outcome = "exit-failed";
       p.closedAt = obs.ts;
