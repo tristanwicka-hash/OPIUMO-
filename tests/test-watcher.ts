@@ -373,8 +373,12 @@ async function main() {
     const t0 = Date.now();
     await watcher.stop();
     const took = Date.now() - t0;
-    check("stop() resolves despite unsubscribes that never answer", true);
-    check(`...within roughly the cap per subscription (3 unsubscribes x 40ms), not forever: ${took}ms`, took < 1000);
+    // The `check("stop() resolves...", true)` that used to be here was a literal
+    // constant. Reaching the line does encode something - a hung stop() never
+    // gets here - but the failure mode is then a HANG, not a red, which is a
+    // worse signal than a FAIL and takes the whole runner with it. The timing
+    // assertion below is the real one and makes it redundant.
+    check(`stop() resolves despite unsubscribes that never answer, within roughly the cap (3 unsubscribes x 40ms) rather than forever: ${took}ms`, took < 1000);
     // restart() is private; exercised through checkHealth() with a stale slot.
     (watcher as any).lastSlotSeenAt = 0;
     (watcher as any).running = true;

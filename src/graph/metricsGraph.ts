@@ -271,7 +271,20 @@ async function activityData(s: MetricsState): Promise<Partial<MetricsState>> {
   try {
     const activityAddress = s.event.poolAddress ? new PublicKey(s.event.poolAddress) : s.mint;
     const activity = await timeout(s, getWalletActivity(s.connection, activityAddress, s.polling.walletActivitySampleSize), "wallet activity");
-    out = { uniqueWallets: activity.uniqueWallets, transactionCount: activity.transactionCount };
+    if (!activity.complete) {
+      // A PARTIAL wallet read is not a measurement. uniqueWallets would be a
+      // floor and the wallet/transaction ratio computed from it would be too
+      // low, which the filter engine reads as "a few wallets doing most of the
+      // volume - possible wash trading". Report it as unknown and say why.
+      out = {
+        warnings: [
+          ...s.warnings,
+          `walletActivity: ${activity.failedBatches} of the signature batches failed, so uniqueWallets would be a floor (${activity.uniqueWallets} seen over ${activity.transactionCount} txs). Reported as UNKNOWN rather than as a low ratio.`,
+        ],
+      };
+    } else {
+      out = { uniqueWallets: activity.uniqueWallets, transactionCount: activity.transactionCount };
+    }
   } catch (err: any) {
     out = { warnings: [...s.warnings, `walletActivity: ${err?.message || err}`] };
   }

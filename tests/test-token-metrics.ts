@@ -277,6 +277,19 @@ async function main() {
     const sol = await getRaydiumLiquiditySol(conn, "CoinMint", "SomeOtherQuoteMint", Keypair.generate().publicKey, Keypair.generate().publicKey);
     check("Raydium liquidity returns null for a non-SOL-paired pool", sol === null);
   }
+  {
+    // Audit 2026-09-13. `uiAmount` is `number | null` in the RPC response and
+    // the old code was `?? 0`, turning "the node gave us no number" into a
+    // MEASUREMENT of zero. The filter engine then wrote "liquidity too low
+    // (0.00 SOL)" - a specific, measured-sounding rejection manufactured from
+    // a failed read - instead of taking its own can't-verify branch.
+    const conn = mockConnection({ getTokenAccountBalance: async () => ({ value: { uiAmount: null } }) });
+    const sol = await getRaydiumLiquiditySol(conn, "SomeCoinMint", WSOL_MINT, Keypair.generate().publicKey, Keypair.generate().publicKey);
+    check("a vault balance with no usable uiAmount is UNKNOWN, not 0 SOL", sol === null);
+    const conn2 = mockConnection({ getTokenAccountBalance: async () => ({ value: { uiAmount: 0 } }) });
+    const sol2 = await getRaydiumLiquiditySol(conn2, "SomeCoinMint", WSOL_MINT, Keypair.generate().publicKey, Keypair.generate().publicKey);
+    check("a genuine zero balance is still reported as 0, not as unknown", sol2 === 0);
+  }
 
   console.log("\n-- wallet activity (unique wallets vs tx volume) --");
   {
@@ -298,6 +311,7 @@ async function main() {
     });
     const activity = await getWalletActivity(conn, Keypair.generate().publicKey, 100);
     check("transactionCount matches signature count", activity.transactionCount === 8);
+    check("a fully successful read is marked complete", activity.complete === true && activity.failedBatches === 0);
     check("uniqueWallets deduplicates fee payers", activity.uniqueWallets === 5);
   }
 
@@ -439,6 +453,33 @@ async function main() {
     };
     const metrics = await collectTokenMetrics(conn, event, { metricsMaxAgeMs: 5000, metricsFetchTimeoutMs: 5000 });
     check("fast collection under metricsMaxAgeMs is NOT flagged stale", metrics.stale === false);
+  }
+
+  {
+    // Audit 2026-09-13. A failed batch left uniqueWallets as a FLOOR while
+    // transactionCount stayed at the full signature count, and nothing in the
+    // return said so - the old comment claimed the caller could see it via
+    // transactionCount, which was never true. The engine then computed a low
+    // wallet/tx ratio and logged "possible wash trading".
+    const wallets = Array.from({ length: 20 }, () => Keypair.generate().publicKey);
+    const sigs = Array.from({ length: 20 }, (_, i) => ({ signature: `sig${i}` }));
+    let call = 0;
+    const conn = mockConnection({
+      getSignaturesForAddress: async () => sigs,
+      getParsedTransactions: async (sigList: string[]) => {
+        call++;
+        if (call === 1) throw new Error("429 Too Many Requests");
+        return sigList.map((sig) => {
+          const i = parseInt(sig.replace("sig", ""), 10);
+          return { transaction: { message: { accountKeys: [{ pubkey: wallets[i] }] } } };
+        });
+      },
+    });
+    const partial = await getWalletActivity(conn, Keypair.generate().publicKey, 100);
+    check("a partial read is NOT marked complete", partial.complete === false);
+    check("and the number of failed batches is reported", partial.failedBatches === 1);
+    check("transactionCount is still the full signature count, which is why complete matters", partial.transactionCount === 20);
+    check(`uniqueWallets really is a floor - ${partial.uniqueWallets} seen, not 20`, partial.uniqueWallets < 20 && partial.uniqueWallets > 0);
   }
 
   console.log(`\nTotal: ${pass} passed, ${fail} failed`);

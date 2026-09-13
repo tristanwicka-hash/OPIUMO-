@@ -47,7 +47,17 @@ check("...selling at 0.4 raised realises more than the floor but less than entry
 const rRaised1 = replayOne(close("D", 2), drain, "venue", raisedStopRule(50, 1), flatStake(0.2));
 check("persistence 1 fires one reading earlier (t=61s, 1.0 raised)", rRaised1.result === "exited" && rRaised1.reason.startsWith("SOL raised 1.000"), rRaised1.reason);
 check("do nothing on the drain = floor valuation", Math.abs((replayOne(close("D", 2), drain, "venue", doNothingRule, flatStake(0.2)).net as number) - (rDrainStop.net as number)) < 1e-12);
-check("drain rows are flagged as drains", rDrainStop.drain === false || true); // isDrained needs exitProceedsSol; synthetic closes carry none
+// This was `check("drain rows are flagged as drains", rDrainStop.drain === false || true)`.
+// `X || true` is true for every value of X - isDrained() could have been
+// deleted entirely and it stayed green. The trailing comment admitted the
+// fixture could not exercise it and the assertion shipped anyway.
+//
+// Replaced with the honest version: assert what the replay ACTUALLY reports for
+// a synthetic close, and say why. A synthetic close carries no
+// exitProceedsSol, so isDrained cannot classify it - and "cannot classify" must
+// read as false-or-null, never as a confident "not a drain".
+check("a synthetic close cannot be classified as a drain, and does not claim to be one",
+  rDrainStop.drain !== true, `drain=${JSON.stringify(rDrainStop.drain)}`);
 
 console.log("\nExit rules on the runner");
 const tp = replayOne(close("R", 2), runner, "venue", fixedTakeProfitRule(100), flatStake(0.2));

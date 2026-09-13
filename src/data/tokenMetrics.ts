@@ -246,7 +246,20 @@ export async function getRaydiumLiquiditySol(
   }
 
   const balance = await connection.getTokenAccountBalance(solVault);
-  return balance.value.uiAmount ?? 0;
+  // `uiAmount` is `number | null` in the RPC response. The old code was
+  // `?? 0`, which converted "the node did not give us a number" into a
+  // MEASUREMENT of zero - and this function's own doc comment two dozen lines
+  // above says the filter engine must treat null liquidity as "can't verify"
+  // rather than as a value. The engine has a working null branch that this
+  // could never reach; instead the `< minLiquiditySol` branch fired and wrote
+  // "liquidity too low (0.00 SOL < min X SOL)" into decisions.jsonl, a
+  // specific, measured-sounding rejection manufactured from a failed read.
+  const ui = balance.value.uiAmount;
+  if (typeof ui !== "number" || !Number.isFinite(ui)) {
+    logger.warn("Raydium SOL vault balance came back without a usable uiAmount - liquidity is UNKNOWN, not zero");
+    return null;
+  }
+  return ui;
 }
 
 /**
@@ -260,11 +273,11 @@ export async function getWalletActivity(
   connection: Connection,
   address: PublicKey,
   sampleSize: number
-): Promise<{ uniqueWallets: number; transactionCount: number }> {
+): Promise<{ uniqueWallets: number; transactionCount: number; complete: boolean; failedBatches: number }> {
   const signatures = await connection.getSignaturesForAddress(address, { limit: sampleSize });
   const transactionCount = signatures.length;
 
-  if (transactionCount === 0) return { uniqueWallets: 0, transactionCount: 0 };
+  if (transactionCount === 0) return { uniqueWallets: 0, transactionCount: 0, complete: true, failedBatches: 0 };
 
   const wallets = new Set<string>();
 
@@ -279,6 +292,7 @@ export async function getWalletActivity(
   // trigger 429s that the client then retries - turning a cheap call into a slow
   // one. 10 keeps the round-trip saving without the burst.
   const batchSize = 10;
+  let failedBatches = 0;
   for (let i = 0; i < signatures.length; i += batchSize) {
     const batch = signatures.slice(i, i + batchSize);
     let txs: (Awaited<ReturnType<typeof connection.getParsedTransaction>>)[] = [];
@@ -288,9 +302,20 @@ export async function getWalletActivity(
         { maxSupportedTransactionVersion: 0 }
       );
     } catch {
-      // A failed chunk costs us those wallets but must not discard the rest -
-      // the count is then a floor, which the caller can see via transactionCount.
+      // A failed chunk costs us those wallets but must not discard the rest.
+      //
+      // The old comment claimed "the count is then a floor, which the caller
+      // can see via transactionCount" - which was not true. `transactionCount`
+      // is `signatures.length` and does not move when a batch fails, so the
+      // caller had no way to tell a partial read from a complete one. A run
+      // where three of ten batches were rate-limited returned, say, 12 wallets
+      // over 100 transactions, and the engine wrote "wallet/tx ratio too low
+      // (0.12) - possible wash trading" into the decision log. A wrong,
+      // specific, measured-sounding rejection.
+      //
+      // `complete` and `failedBatches` are what makes the floor visible.
       txs = [];
+      failedBatches++;
     }
     for (const tx of txs) {
       const feePayer = tx?.transaction.message.accountKeys?.[0]?.pubkey?.toBase58();
@@ -298,7 +323,7 @@ export async function getWalletActivity(
     }
   }
 
-  return { uniqueWallets: wallets.size, transactionCount };
+  return { uniqueWallets: wallets.size, transactionCount, complete: failedBatches === 0, failedBatches };
 }
 
 /**

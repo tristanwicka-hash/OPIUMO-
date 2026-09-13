@@ -10,6 +10,19 @@ import fs from "fs";
 import path from "path";
 import { DrawdownConfig, DrawdownState, emptyState, applyRealised, evaluateDrawdown, markHalted, clearHalt, grantOverride, rollTo, validateDrawdownConfig, utcDay } from "../src/risk/drawdownGuard";
 
+/**
+ * A committed stand-in for the production paper log.
+ *
+ * Shaped like OPIUMO's real book: mostly small losses, a few large winners.
+ * It exists so the kill-switch replay cannot silently become a no-op on a
+ * machine where logs/ is empty - see the comment at the replay below.
+ */
+const FIXTURE_PNLS: number[] = (() => {
+  const out: number[] = [];
+  for (let i = 0; i < 120; i++) out.push(i % 14 === 0 ? 0.42 : -0.06);
+  return out;
+})();
+
 let pass = 0, fail = 0;
 const check = (n: string, c: boolean, d?: string) => { if (c) { pass++; console.log(`  ok   ${n}`); } else { fail++; console.log(`  FAIL ${n}${d ? ` - ${d}` : ""}`); } };
 const CFG: DrawdownConfig = { enabled: true, maxDailyLoss: 1, maxTotalLoss: 2, maxPeakDrawdown: 1.5, unit: "SOL" };
@@ -67,7 +80,7 @@ console.log("\nReplay: a real losing stretch from the paper book");
   // The actual closed paper positions, oldest first: the losing stretch that
   // exists on disk rather than a stretch invented to make the switch fire.
   const file = path.join("logs", "paper-positions.jsonl");
-  const pnls: number[] = [];
+  let pnls: number[] = [];
   if (fs.existsSync(file)) {
     for (const l of fs.readFileSync(file, "utf-8").split("\n")) {
       if (!l.trim()) continue;
@@ -77,8 +90,21 @@ console.log("\nReplay: a real losing stretch from the paper book");
       } catch { /* partial */ }
     }
   }
-  if (pnls.length < 20) check("SKIPPED: fewer than 20 closed paper positions on disk to replay", true);
-  else {
+  // The real-data arm used to be gated on `logs/paper-positions.jsonl` holding
+  // 20+ closed rows, with `check("SKIPPED: ...", true)` on the other branch.
+  // That coupled a SAFETY-CRITICAL test to a mutable production log: clear the
+  // logs, run on a fresh clone, or rotate the file, and five assertions about
+  // the kill switch vanish and are replaced by one that says PASS and is
+  // literally `true`. The suite goes green with the kill switch untested.
+  //
+  // The committed fixture below is the floor. The production log is still
+  // replayed when it is there, because real shapes are worth more than
+  // synthetic ones - but it is now a bonus, not the only coverage.
+  if (pnls.length < 20) {
+    check("no production log to replay, so the committed fixture is the coverage - NOT a skip", true);
+    pnls = FIXTURE_PNLS.slice();
+  }
+  {
     const cfg: DrawdownConfig = { enabled: true, maxDailyLoss: 0.5, maxTotalLoss: 1, maxPeakDrawdown: 0.75, unit: "SOL" };
     let st = emptyState(D1); let haltedAfter = -1; let haltDetail = "";
     for (let i = 0; i < pnls.length; i++) {
@@ -94,7 +120,7 @@ console.log("\nReplay: a real losing stretch from the paper book");
     check("every position after the halt would have been refused", refusedAfter === pnls.length - haltedAfter);
     const avoided = pnls.slice(haltedAfter).reduce((a, x) => a + x, 0);
     console.log(`       it would have sat out the remaining ${pnls.length - haltedAfter} position(s), whose net was ${avoided.toFixed(4)} SOL`);
-    check("the replay is over REAL recorded positions, not a synthetic stretch", pnls.length > 100);
+    check("the replay covers enough positions to be worth calling a replay", pnls.length >= 20, `${pnls.length}`);
   }
 }
 
