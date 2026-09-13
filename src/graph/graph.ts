@@ -120,6 +120,40 @@ export async function runGraph<S extends object>(g: GraphSpec<S>, initial: S): P
   throw new Error(`graph "${g.name}": more than ${MAX_STEPS} steps - a cycle with no exit`);
 }
 
+/**
+ * The same walk, synchronously.
+ *
+ * Added 2026-09-14 for OptionsBot's `buildShouts`, which is synchronous and
+ * whose callers should not have to become async just because its routing was
+ * made explicit. Making a public function async to accommodate a refactor is a
+ * behaviour change, and this refactor is not allowed one.
+ *
+ * REFUSES a graph whose nodes return promises, rather than silently treating a
+ * pending promise as a finished result - which would merge a Promise object
+ * into the state and produce a wrong answer with no error.
+ */
+export function runGraphSync<S extends object>(g: GraphSpec<S>, initial: S): RunResult<S> {
+  const v = validateGraph(g);
+  if (!v.ok) throw new Error(`graph "${g.name}" is invalid:\n  ${v.problems.join("\n  ")}`);
+  let state = initial;
+  const path: Step[] = [];
+  let node = g.start;
+  const terminals = new Set(g.terminals);
+  for (let i = 0; i < MAX_STEPS; i++) {
+    const out = g.nodes[node](state);
+    if (out && typeof (out as any).then === "function") {
+      throw new Error(`graph "${g.name}": node "${node}" returned a promise, but runGraphSync cannot await it. Use runGraph.`);
+    }
+    if (out) state = { ...state, ...(out as Partial<S>) };
+    if (terminals.has(node)) { path.push({ node, edge: null, to: null }); return { state, path }; }
+    const edge = (g.edges[node] ?? []).find((e) => !e.when || e.when(state));
+    if (!edge) throw new Error(`graph "${g.name}": node "${node}" matched no edge - validateGraph should have refused this`);
+    path.push({ node, edge: edge.label, to: edge.to });
+    node = edge.to;
+  }
+  throw new Error(`graph "${g.name}": more than ${MAX_STEPS} steps - a cycle with no exit`);
+}
+
 /** Mermaid flowchart. Conditional edges carry their label; the default edge is drawn plain. */
 export function toMermaid<S>(g: GraphSpec<S>, opts: { title?: string; direction?: "TD" | "LR" } = {}): string {
   const L: string[] = [];
