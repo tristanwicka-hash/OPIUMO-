@@ -167,6 +167,13 @@
       "maxPriorDrainRate": 0.5,
       "storeFile": "logs/creators.jsonl"
     },
+    "forcedExit": {
+      "_comment": "Added 2026-09-14. Paper positions only close from a watchlist observation, so a token the watchlist stops reading stayed open forever - 4,364 of 5,191 opens had no close. These close such positions at their LAST KNOWN proceeds with exitReason 'stale-observation: ...' or 'max-hold: ...' and a forcedExit record on the row; the exit rules above are unchanged and still fire first whenever an observation arrives. Filter forcedExit out of any exit-rule P&L study: a forced close measures that tracking stopped, not what a stop would have done. staleObservationMs 6h: measured 2026-09-14 on the watchlist logs, the gap between consecutive readings of a still-open position was p50 30s, p90 59min, p99 5.1h, max 5.9h (the per-tick read budget makes long gaps normal), and watchlist.maxAgeMs is 6h - any shorter limit would close positions that are still being tracked. maxHoldMs 24h: a backstop matching the outcome tracker's last checkpoint (1440min). A position with no reading at all closes with exitProceedsSol null, never at entry: a 0% trade that was never measured is not a result. Set enabled=false to stop forcing exits.",
+      "enabled": true,
+      "staleObservationMs": 21600000,
+      "maxHoldMs": 86400000,
+      "checkIntervalMs": 60000
+    },
     "logFile": "logs/paper-positions.jsonl",
     "drawdown": {
       "_comment": "The drawdown kill switch. DISABLED, and switching it on is Tristan's decision (APPROVALS 50). Wired into PaperBook on 2026-09-13 after an audit found src/risk/drawdownGuard.ts was imported by nothing except its own test: 172 lines of loss-limit logic, copied into three repos, and not one bot called it. A kill switch nothing is wired to is a document about a safety net, not a safety net. With enabled=false the book behaves exactly as it did before. With enabled=true, once a limit is breached the book opens NO further paper positions and the halt survives a restart, which means it will stop the paper book collecting data - that is the whole point, and it is why it is a decision rather than a default. Limits are in SOL and are positive numbers because they are LOSS limits.",

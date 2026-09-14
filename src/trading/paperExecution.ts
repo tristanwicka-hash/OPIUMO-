@@ -126,9 +126,93 @@ export interface PaperPosition {
   exitReason: string | null;
   peakProceedsSol: number;
   lastProceedsSol: number | null;
+  /** Timestamp of the most recent observation, or null when none has arrived since entry (or restore). */
+  lastObservedAt?: string | null;
+  /** Set only when the position was closed by `expire`, not by its exit rule. */
+  forcedExit?: ForcedExitRecord;
   state: TrailState;
   /** Present only under the raised-stop-or-take-profit rule. */
   raisedState?: RaisedState;
+  /**
+   * Set only on a position rebuilt from the log after a restart. Says what the
+   * restore could NOT carry over, so a restored row is never mistaken for one
+   * that was tracked continuously.
+   */
+  restored?: { at: string; note: string };
+}
+
+/**
+ * The `paper-open` row as written to the log. Built here rather than inline in
+ * the pipeline so the writer and `PaperBook.restore` share one shape.
+ */
+export interface PaperOpenRow {
+  mint: string;
+  openedAt: string;
+  liveVerdict: LiveVerdict;
+  /** Absent on rows written before APPROVALS 37. */
+  venue?: string | null;
+  pricingModel?: string | null;
+  /** Absent on rows written before the restore existed. */
+  exitRule?: ExitRuleName;
+  entryLiquiditySol: number;
+  entryProceedsSol: number;
+  poolFraction: number;
+}
+
+export function paperOpenRow(p: PaperPosition, openNow: number): Record<string, unknown> {
+  return {
+    event: "paper-open", mint: p.mint, openedAt: p.openedAt, liveVerdict: p.liveVerdict, venue: p.venue ?? null,
+    pricingModel: p.pricingModel ?? null, exitRule: p.exitRule, entryLiquiditySol: p.entryLiquiditySol,
+    entryProceedsSol: p.entryProceedsSol, poolFraction: p.poolFraction, openNow,
+  };
+}
+
+/**
+ * Opens minus closes, in log order. Any `paper-close` row (closed, exit-failed
+ * or abandoned) ends a position; the last `paper-open` for a mint wins.
+ */
+export function openRowsFromLog(rows: Record<string, unknown>[]): PaperOpenRow[] {
+  const open = new Map<string, PaperOpenRow>();
+  for (const r of rows) {
+    if (typeof r.mint !== "string") continue;
+    if (r.event === "paper-open") open.set(r.mint, r as unknown as PaperOpenRow);
+    else if (r.event === "paper-close") open.delete(r.mint);
+  }
+  return [...open.values()];
+}
+
+/**
+ * Closes positions the exit rule can no longer reach. Positions only ever close
+ * from an observation, so a token the watchlist stops reading - evicted, aged
+ * out, or simply not re-added after a restart - would otherwise stay open
+ * forever. Both limits are in config (paperExecution.forcedExit).
+ */
+export interface ForcedExitConfig {
+  enabled: boolean;
+  /** Close any position held at least this long, however recently it was observed. */
+  maxHoldMs: number;
+  /** Close a position with no observation for this long (measured from entry when there has been none). */
+  staleObservationMs: number;
+}
+
+export type ForcedExitRule = "stale-observation" | "max-hold";
+
+export interface ForcedExitRecord {
+  rule: ForcedExitRule;
+  heldMs: number;
+  /** Time since the last observation, or since entry when there was none. */
+  silentMs: number;
+  /** Where exitProceedsSol came from. Null exit = no reading ever, so there is no price to close at. */
+  priceSource: string;
+}
+
+export interface RestoreResult {
+  restored: number;
+  skipped: { mint: string; reason: string }[];
+  /** Rows without an exitRule, whose rule was re-derived from the CURRENT config. */
+  exitRuleInferred: number;
+  /** Restored positions given a last observation from the supplied readings. */
+  lastObservationSeeded: number;
 }
 
 export interface OpenRefusal {
@@ -232,8 +316,7 @@ export class PaperBook {
       return refuse(`position of ${this.config.poolFraction} of the pool realises nothing at entry - unsellable (${priced.model})`);
     }
 
-    const rtp = this.config.raisedTakeProfit;
-    const exitRule: ExitRuleName = rtp && rtp.enabled && venue !== null && rtp.venues.includes(venue) ? "raised-stop-or-take-profit" : "trailing";
+    const exitRule = this.exitRuleFor(venue);
     const position: PaperPosition = {
       mint: params.mint,
       openedAt: params.at,
@@ -251,6 +334,7 @@ export class PaperBook {
       exitReason: null,
       peakProceedsSol: entryProceeds,
       lastProceedsSol: entryProceeds,
+      lastObservedAt: null,
       state: initState({
         mint: params.mint,
         entryTs: params.at,
@@ -266,6 +350,155 @@ export class PaperBook {
     return { opened: position, refusal: null };
   }
 
+  private exitRuleFor(venue: string | null): ExitRuleName {
+    const rtp = this.config.raisedTakeProfit;
+    return rtp && rtp.enabled && venue !== null && rtp.venues.includes(venue) ? "raised-stop-or-take-profit" : "trailing";
+  }
+
+  /**
+   * Puts positions that were open when the process last stopped back into the
+   * book. Without this every restart orphaned the whole open book: the rows
+   * said "open" forever and nothing could ever close them.
+   *
+   * What comes back exactly: entry (the RECORDED entryProceedsSol, not a
+   * re-price), venue, verdict, pool fraction, and the exit rule when the row
+   * carries it. What does not: the peak, the last valuation and the
+   * persistence counters, because observations are not logged - the stop
+   * restarts from entry, and `restored.note` says so on the position.
+   *
+   * The open-position cap is NOT applied: these positions already exist, and
+   * refusing one would orphan it again. The cap still refuses new opens.
+   */
+  restore(
+    rows: PaperOpenRow[],
+    at: string,
+    /**
+     * The last liquidity reading per mint from before the restart (the
+     * watchlist logs them). Sets the last valuation so a later forced exit
+     * closes at a real reading rather than at entry. The exit rule is NOT
+     * stepped with it: one reading cannot satisfy a persistence count.
+     */
+    lastObservations?: Map<string, { ts: string; liquiditySol: number }>
+  ): RestoreResult {
+    const result: RestoreResult = { restored: 0, skipped: [], exitRuleInferred: 0, lastObservationSeeded: 0 };
+    for (const r of rows) {
+      const skip = (reason: string) => result.skipped.push({ mint: String(r.mint), reason });
+      if (this.positions.has(r.mint)) { skip("already open in this book"); continue; }
+      if (typeof r.openedAt !== "string" || Number.isNaN(Date.parse(r.openedAt))) { skip("openedAt missing or unparseable"); continue; }
+      if (!(r.entryProceedsSol > 0) || !(r.entryLiquiditySol > 0) || !(r.poolFraction > 0)) {
+        skip("entry values missing or not positive - no entry price to measure against");
+        continue;
+      }
+      if (r.liveVerdict !== "PASS" && r.liveVerdict !== "REJECTED") { skip("liveVerdict missing"); continue; }
+      const venue = r.venue ?? null;
+      const priced = this.factory({ venue, entryLiquiditySol: r.entryLiquiditySol, poolFraction: r.poolFraction });
+      const inferred = r.exitRule === undefined;
+      const exitRule: ExitRuleName = r.exitRule ?? this.exitRuleFor(venue);
+      if (inferred) result.exitRuleInferred++;
+      const notes = ["restored from the log after a restart; peak, last valuation and stop counters restart from entry"];
+      if (inferred) notes.push(`exit rule not on the row, re-derived from current config as ${exitRule}`);
+      if (r.pricingModel && r.pricingModel !== priced.model) notes.push(`opened under "${r.pricingModel}", now valued with "${priced.model}"`);
+
+      const position: PaperPosition = {
+        mint: r.mint,
+        openedAt: r.openedAt,
+        liveVerdict: r.liveVerdict,
+        venue,
+        pricingModel: priced.model,
+        exitRule,
+        entryLiquiditySol: r.entryLiquiditySol,
+        entryProceedsSol: r.entryProceedsSol,
+        poolFraction: r.poolFraction,
+        outcome: "open",
+        observations: 0,
+        closedAt: null,
+        exitProceedsSol: null,
+        exitReason: null,
+        peakProceedsSol: r.entryProceedsSol,
+        lastProceedsSol: r.entryProceedsSol,
+        state: initState({ mint: r.mint, entryTs: r.openedAt, poolFraction: r.poolFraction, entryProceedsSol: r.entryProceedsSol } as Position),
+        restored: { at, note: notes.join("; ") },
+      };
+      if (exitRule === "raised-stop-or-take-profit") {
+        position.raisedState = initRaisedState({ entryTs: r.openedAt, entryLiquiditySol: r.entryLiquiditySol, entryProceedsSol: r.entryProceedsSol });
+      }
+      const seed = lastObservations?.get(r.mint);
+      if (seed && Date.parse(seed.ts) >= Date.parse(r.openedAt)) {
+        const v = priced.fn(seed.liquiditySol, r.poolFraction);
+        position.lastObservedAt = seed.ts;
+        position.lastProceedsSol = v;
+        if (v !== null) position.peakProceedsSol = Math.max(position.peakProceedsSol, v);
+        position.restored!.note += `; last valuation seeded from the reading at ${seed.ts} (${seed.liquiditySol} SOL in the pool)`;
+        result.lastObservationSeeded++;
+      } else {
+        position.lastObservedAt = null;
+      }
+      this.positions.set(r.mint, position);
+      this.pricing.set(r.mint, priced.fn);
+      result.restored++;
+    }
+    return result;
+  }
+
+  /**
+   * Closes every open position that has gone stale or reached the maximum hold,
+   * at its last known proceeds. Stale is checked first: when both apply, the
+   * position stopped being observed, which is the more useful thing to know.
+   *
+   * "Last known proceeds" means a REAL reading. A position that never received
+   * one (only possible for a restored position with no logged reading, since an
+   * opened one starts with its entry) closes with exitProceedsSol null: closing
+   * it at entry would record a 0% trade that was never measured.
+   */
+  expire(now: string, cfg: ForcedExitConfig): PaperPosition[] {
+    if (!cfg.enabled) return [];
+    const nowMs = Date.parse(now);
+    const out: PaperPosition[] = [];
+    for (const p of [...this.positions.values()]) {
+      const openedMs = Date.parse(p.openedAt);
+      const heldMs = nowMs - openedMs;
+      const lastMs = p.lastObservedAt ? Date.parse(p.lastObservedAt) : openedMs;
+      const silentMs = nowMs - lastMs;
+      let rule: ForcedExitRule;
+      if (silentMs >= cfg.staleObservationMs) rule = "stale-observation";
+      else if (heldMs >= cfg.maxHoldMs) rule = "max-hold";
+      else continue;
+
+      const neverRead = p.restored !== undefined && !p.lastObservedAt;
+      const exit = neverRead ? null : p.lastProceedsSol;
+      const priceSource = neverRead
+        ? "none - restored with no logged reading, so there is no price to close at"
+        : p.lastObservedAt
+          ? `last observation at ${p.lastObservedAt}`
+          : "entry valuation - no observation arrived after entry";
+      const h = (ms: number) => `${(ms / 3_600_000).toFixed(1)}h`;
+      const why = rule === "stale-observation"
+        ? `stale-observation: no observation for ${h(silentMs)} (limit ${h(cfg.staleObservationMs)})`
+        : `max-hold: held ${h(heldMs)} (limit ${h(cfg.maxHoldMs)})`;
+
+      p.outcome = "closed";
+      p.closedAt = now;
+      p.exitProceedsSol = exit;
+      p.exitReason = `${why} - the exit rule never fired; closed at ${priceSource}`;
+      p.forcedExit = { rule, heldMs, silentMs, priceSource };
+      this.positions.delete(p.mint);
+      this.pricing.delete(p.mint);
+      this.closed.push(p);
+      if (exit !== null) this.applyToDrawdown(p, exit, now);
+      out.push(p);
+    }
+    return out;
+  }
+
+  private applyToDrawdown(p: PaperPosition, exitProceedsSol: number, ts: string): void {
+    if (!this.drawdown || !this.config.drawdown?.enabled) return;
+    const at = new Date(ts);
+    this.drawdown = applyRealised(this.drawdown, exitProceedsSol - p.entryProceedsSol, at);
+    const d = evaluateDrawdown(this.drawdown, this.config.drawdown, at);
+    this.lastDrawdownDecision = d;
+    this.drawdown = markHalted(this.drawdown, d, at);
+  }
+
   /**
    * Feeds one liquidity observation to an open position, if there is one.
    *
@@ -277,6 +510,7 @@ export class PaperBook {
     if (!p) return null;
 
     p.observations++;
+    p.lastObservedAt = obs.ts;
     const proceeds = this.pricing.get(mint)!;
     const realizable = proceeds(obs.liquiditySol, p.poolFraction);
     if (realizable !== null) {
@@ -306,13 +540,7 @@ export class PaperBook {
       // Realised result feeds the guard. Only a close with a real exit price
       // counts - an exit-failed position has no realised number, and treating
       // its absence as a zero would make a broken exit look like a flat trade.
-      if (this.drawdown && this.config.drawdown?.enabled && p.exitProceedsSol !== null) {
-        const at = new Date(obs.ts);
-        this.drawdown = applyRealised(this.drawdown, p.exitProceedsSol - p.entryProceedsSol, at);
-        const d = evaluateDrawdown(this.drawdown, this.config.drawdown, at);
-        this.lastDrawdownDecision = d;
-        this.drawdown = markHalted(this.drawdown, d, at);
-      }
+      if (p.exitProceedsSol !== null) this.applyToDrawdown(p, p.exitProceedsSol, obs.ts);
     } else if (out.decision.action === "EXIT_FAILED") {
       p.outcome = "exit-failed";
       p.closedAt = obs.ts;

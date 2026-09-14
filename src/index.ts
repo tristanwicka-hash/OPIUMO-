@@ -15,7 +15,8 @@ import { Watchlist } from "./watchlist/watchlist";
 import { evaluateSchedule, weeklyOpenHours } from "./schedule/scheduler";
 import { CreditBreaker } from "./rpc/creditBudget";
 import { getRpcMeter } from "./rpc/connection";
-import { PaperBook, summarise } from "./trading/paperExecution";
+import { PaperBook, PaperPosition, summarise, openRowsFromLog } from "./trading/paperExecution";
+import { readPaperLog, lastWatchlistReadings } from "./trading/paperBookStore";
 import { loadDrawdownState, saveDrawdownState, DRAWDOWN_STATE_FILE } from "./risk/drawdownStore";
 import { DrawdownState } from "./risk/drawdownGuard";
 import { venuePricing } from "./analysis/venueModels";
@@ -163,6 +164,27 @@ async function main() {
         `entry priced at REALIZABLE PROCEEDS -> ${paperCfg.logFile}. No wallet, no signing, no order path: ` +
         `trading.enabled is irrelevant because there is nothing to enable. Zero added RPC calls.`
     );
+    // The book is in memory, so without this every restart orphaned every open
+    // position: logged as open, never closable. Rebuilt from the log (opens
+    // minus closes) before anything can open or observe.
+    const read = readPaperLog(paperCfg.logFile);
+    const restoredAt = new Date().toISOString();
+    const openRows = openRowsFromLog(read.rows);
+    // The last reading each one had before the restart, so a forced exit closes at a real value.
+    const readings = openRows.length ? lastWatchlistReadings(config.logging.watchlistFile, new Set(openRows.map((o) => o.mint))) : new Map();
+    const r = paperBook.restore(openRows, restoredAt, readings);
+    const msg =
+      `Paper book restored: ${r.restored} open position(s) from ${read.files.length} log file(s), ` +
+      `${r.lastObservationSeeded} with a last reading from ${config.logging.watchlistFile}` +
+      (r.skipped.length ? `, ${r.skipped.length} skipped` : "") +
+      (r.exitRuleInferred ? `, ${r.exitRuleInferred} with the exit rule re-derived from current config (row predates it)` : "") +
+      (read.unparseable ? `, ${read.unparseable} unparseable log line(s) ignored - a close on one of them would leave its position restored` : "") +
+      `. Peak and stop counters restart from entry: observations are not logged.`;
+    if (r.skipped.length || read.unparseable) logger.warn(msg); else logger.info(msg);
+    paperLog.append({
+      event: "paper-restore", restoredAt, restored: r.restored, open: paperBook.openCount, skipped: r.skipped,
+      exitRuleInferred: r.exitRuleInferred, lastObservationSeeded: r.lastObservationSeeded, unparseableLines: read.unparseable, files: read.files,
+    });
   }
 
   /**
@@ -185,6 +207,20 @@ async function main() {
     );
   }
 
+  /** One path for every paper close, whatever closed it. */
+  const recordPaperClose = (after: PaperPosition) => {
+    paperLog.append({ event: "paper-close", ...after, state: undefined });
+    // Persist the halt state on every close, not on shutdown. A guard whose
+    // state is only written when the process exits cleanly loses it in the
+    // one case that matters most - a crash right after a big loss.
+    const ds = paperBook.drawdownState;
+    if (ds) {
+      saveDrawdownState(ds, DRAWDOWN_STATE_FILE);
+      const d = paperBook.drawdownDecision;
+      if (d?.halted) logger.error(`*** ${d.detail} *** No further paper positions will be opened. Clearing it is a human decision (see src/risk/drawdownGuard.ts clearHalt).`);
+    }
+  };
+
   const watchlist = new Watchlist(connection, {
     onPass: async (event, result) => {
       if (tradingEngine) await tradingEngine.onFilterPass(event, result);
@@ -198,21 +234,37 @@ async function main() {
       const before = paperBook.openPositions().find((p) => p.mint === mint);
       if (!before) return;
       const after = paperBook.observe(mint, { ts: atIso, liquiditySol });
-      if (after && after.outcome !== "open") {
-        paperLog.append({ event: "paper-close", ...after, state: undefined });
-        // Persist the halt state on every close, not on shutdown. A guard whose
-        // state is only written when the process exits cleanly loses it in the
-        // one case that matters most - a crash right after a big loss.
-        const ds = paperBook.drawdownState;
-        if (ds) {
-          saveDrawdownState(ds, DRAWDOWN_STATE_FILE);
-          const d = paperBook.drawdownDecision;
-          if (d?.halted) logger.error(`*** ${d.detail} *** No further paper positions will be opened. Clearing it is a human decision (see src/risk/drawdownGuard.ts clearHalt).`);
-        }
-      }
+      if (after && after.outcome !== "open") recordPaperClose(after);
     },
   });
   watchlist.start();
+
+  // A position only closes from an observation, so one the watchlist stops
+  // reading would stay open forever. Swept once now - which clears whatever the
+  // restore brought back that can no longer be observed - then on a timer.
+  // unref'd like every other timer here, so it never keeps the process alive.
+  const forcedExit = paperCfg.forcedExit;
+  if (paperCfg.enabled && forcedExit?.enabled) {
+    const sweep = () => {
+      const closed = paperBook.expire(new Date().toISOString(), forcedExit);
+      for (const p of closed) recordPaperClose(p);
+      if (closed.length) {
+        const noPrice = closed.filter((p) => p.exitProceedsSol === null).length;
+        const stale = closed.filter((p) => p.forcedExit?.rule === "stale-observation").length;
+        logger.warn(
+          `Paper forced exit: closed ${closed.length} position(s) the exit rule could no longer reach ` +
+            `(${stale} stale-observation, ${closed.length - stale} max-hold), at last known proceeds; ` +
+            `${noPrice} had no reading at all and closed with no exit price. ${paperBook.openCount} still open.`
+        );
+      }
+    };
+    logger.info(
+      `Paper forced exit ON: close after ${forcedExit.staleObservationMs / 3_600_000}h without an observation ` +
+        `or ${forcedExit.maxHoldMs / 3_600_000}h held, checked every ${forcedExit.checkIntervalMs / 1000}s.`
+    );
+    sweep();
+    setInterval(sweep, forcedExit.checkIntervalMs).unref?.();
+  }
 
   // Reconciliation counters:
   //   detected === decided + dropped + notEvaluated + still-queued

@@ -104,6 +104,8 @@ const suites = [
   { name: "Schedule savings analysis (offline)", script: "tests/test-schedule-savings.ts" },
   { name: "Outcome backlog analysis (offline)", script: "tests/test-outcome-backlog.ts" },
   { name: "Paper execution + shadow filters (offline)", script: "tests/test-paper-execution.ts" },
+  { name: "Paper book survives a restart (offline)", script: "tests/test-paper-restore.ts" },
+  { name: "Paper forced exits: stale-observation and max-hold (offline)", script: "tests/test-paper-forced-exit.ts" },
   { name: "Holder data routing (offline)", script: "tests/test-holder-data.ts" },
   { name: "Credit circuit breaker (offline)", script: "tests/test-credit-budget.ts" },
   { name: "Liveness heartbeat + supervisor decisions (offline)", script: "tests/test-supervisor.ts" },

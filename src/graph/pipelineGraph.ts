@@ -38,6 +38,7 @@ import { GraphSpec } from "./graph";
 import { NewPoolEvent } from "../watcher/types";
 import { TokenMetrics } from "../data/tokenMetrics";
 import { FilterResult } from "../filters/engine";
+import { paperOpenRow } from "../trading/paperExecution";
 import { ScheduleDecision } from "../schedule/scheduler";
 import { BudgetDecision } from "../rpc/creditBudget";
 
@@ -206,8 +207,8 @@ export function buildWorkerGraph(d: WorkerDeps): GraphSpec<WorkerState> {
           liveVerdict: s.result!.decision === "PASS" ? "PASS" : "REJECTED",
         });
         if (opened) {
-          d.paper.log({ event: "paper-open", mint: opened.mint, openedAt: opened.openedAt, liveVerdict: opened.liveVerdict, venue: opened.venue ?? null, pricingModel: opened.pricingModel ?? null,
-            entryLiquiditySol: opened.entryLiquiditySol, entryProceedsSol: opened.entryProceedsSol, poolFraction: opened.poolFraction, openNow: d.paper.openCount() });
+          // Shared shape with PaperBook.restore, which rebuilds the book from these rows after a restart.
+          d.paper.log(paperOpenRow(opened, d.paper.openCount()));
         } else if (refusal) {
           // Recorded, never silent - a cap applied quietly would bias the sample.
           d.paper.log({ event: "paper-refused", mint: refusal.mint, reason: refusal.reason });

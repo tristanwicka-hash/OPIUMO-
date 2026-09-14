@@ -57,6 +57,8 @@
     "outcome:backlog": "ts-node scripts/outcome-backlog.ts",
     "test:backlog": "ts-node tests/test-outcome-backlog.ts",
     "test:paper-exec": "ts-node tests/test-paper-execution.ts",
+    "test:paper-restore": "ts-node tests/test-paper-restore.ts",
+    "test:paper-forced-exit": "ts-node tests/test-paper-forced-exit.ts",
     "test:holder": "ts-node tests/test-holder-data.ts",
     "test:leak-guard": "ts-node tests/test-no-production-writes.ts",
     "test:credit-budget": "ts-node tests/test-credit-budget.ts",

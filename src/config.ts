@@ -232,6 +232,8 @@ export interface PaperExecutionConfig {
     persistenceObservations: number;
     minHoldMs: number;
   };
+  /** Closes positions no observation can reach any more (stale or held too long). Optional: absent = never forced. */
+  forcedExit?: { enabled: boolean; staleObservationMs: number; maxHoldMs: number; checkIntervalMs: number };
   /** APPROVALS 43: raised-stop OR take-profit for the listed venues (paper book only). */
   raisedTakeProfit?: {
     enabled: boolean;
@@ -527,6 +529,12 @@ function validate(config: AppConfig): void {
     // cannot stop the bot booting - but a switched-on guard with a nonsense
     // limit must refuse to start rather than silently never firing.
     errors.push(...validateDrawdownConfig(config.paperExecution.drawdown));
+  }
+  const fx = config.paperExecution?.forcedExit;
+  if (fx?.enabled) {
+    if (!(fx.staleObservationMs > 0)) errors.push("paperExecution.forcedExit.staleObservationMs must be > 0");
+    if (!(fx.maxHoldMs > 0)) errors.push("paperExecution.forcedExit.maxHoldMs must be > 0");
+    if (!(fx.checkIntervalMs > 0)) errors.push("paperExecution.forcedExit.checkIntervalMs must be > 0");
   }
   if (config.paperExecution?.raisedTakeProfit?.enabled) {
     errors.push(...validateRaisedTakeProfit(config.paperExecution.raisedTakeProfit));
