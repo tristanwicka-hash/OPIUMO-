@@ -458,11 +458,21 @@ async function main() {
   // Outcome tracking above is deliberately NOT conditional on this - its pending
   // checkpoints still restore and still fire, because an outcome not captured
   // when it happens costs ~1000 credits to reconstruct later, if it can be at all.
+  //
+  // Every timer in this process is unref'd, and the websocket was the only
+  // thing holding the event loop open. With detection off nothing was, so the
+  // bot exited 0 about 25 s after starting and launchd restarted it - 1,452
+  // times on 2026-09-14 before this was found. Outcome checkpoints only fired
+  // by accident of the next boot finding them overdue. This handle keeps the
+  // process alive on purpose; the SIGINT handler below releases it.
+  let keepAlive: ReturnType<typeof setInterval> | null = null;
   if (config.watcher?.enabled === false) {
+    keepAlive = setInterval(() => {}, 60 * 60_000); // a handle, not a tunable: the callback does nothing
     logger.info(
       "*** DETECTION LOOP OFF *** (config watcher.enabled=false, APPROVALS 52). " +
         "No program-log subscription, no getParsedTransaction per create, no metrics pipeline. " +
-        "Outcome tracking continues for tokens already pending; nothing new will enter it from here."
+        "Outcome tracking continues for tokens already pending; nothing new will enter it from here. " +
+        "The process stays up on purpose until SIGINT."
     );
   } else {
     watcher.start();
@@ -472,6 +482,7 @@ async function main() {
   process.on("SIGINT", async () => {
     logger.info("Shutting down...");
     clearInterval(queueStatsTimer);
+    if (keepAlive) clearInterval(keepAlive);
     const s = queue.stats();
     decisionLog.recordQueueStats({
       detected: counters.detected,
