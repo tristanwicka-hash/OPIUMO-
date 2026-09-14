@@ -61,7 +61,7 @@
   },
   "watcher": {
     "_comment": "THE DETECTION LOOP. Set enabled=false to stop subscribing to Pump.fun and Raydium program logs. APPROVALS 52, decided 2026-09-14: the scanner's new job needs mint + deployer + launch signature, and PumpPortal's free subscribeNewToken supplies all three for 100% of launches at ZERO Helius credits, where this loop supplies them for fewer at full price. Measured 2026-09-13: this subscription streams ~41 GB/day and resolving each create costs 1 getParsedTransaction (~33,120 credits/day on its own); the whole pipeline it feeds was 196,305 credits/day. TURNING THIS OFF DOES NOT STOP OUTCOME TRACKING - outcomeTracker keeps its pending checkpoints and replays them, which is deliberate: outcomes cannot be reconstructed later for less than ~1000 credits a launch, so the series must not be interrupted while the plan is still paid for. It DOES stop new tokens entering that series, because nothing is detecting them any more.",
-    "enabled": true
+    "enabled": false
   },
   "polling": {
     "metricsMaxAgeMs": 4000,
