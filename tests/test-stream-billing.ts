@@ -77,5 +77,5 @@ eq(streamCreditsFor(0.1), 2, "0.1 MB costs 2 credits - Helius's published rate")
 eq(streamCreditsFor(1), 20, "1 MB costs 20 credits");
 eq(streamCreditsFor(0), 0, "no data streamed costs nothing");
 
-console.log(`\n  ${pass} passed, ${fail} failed\n`);
+console.log(`\nTotal: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

@@ -88,5 +88,5 @@ console.log("=== segmenting: the mean across all deployers is the wrong number =
   check("no rows -> recall unknown, never 0 or 1", empty.shallow.meanRecallAt[50] === null && empty.shallow.medianEvents === null);
 }
 
-console.log(`\n  ${pass} passed, ${fail} failed\n`);
+console.log(`\nTotal: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

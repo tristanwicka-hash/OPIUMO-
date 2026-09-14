@@ -118,6 +118,8 @@ const suites = [
   { name: "Log integrity invariants (offline)", script: "tests/test-log-integrity.ts" },
   { name: "Fixture-leak guard (offline)", script: "tests/test-no-production-writes.ts" },
   { name: "Run-summary arithmetic (offline)", script: "tests/test-summary.ts" },
+  { name: "Scanner depth calibration (no events is never perfect recall)", script: "tests/test-depth-calibration.ts" },
+  { name: "Stream-billing window (per-process meter deltas across restarts)", script: "tests/test-stream-billing.ts" },
 ];
 
 /**
