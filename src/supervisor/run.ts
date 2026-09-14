@@ -29,6 +29,8 @@ interface Args {
   once: boolean;
   dryRun: boolean;
   ignoreSchedule: boolean;
+  /** Judge the socket as if detection were on, whatever config says. For tests that exercise the dead-socket rule. */
+  assumeDetectionOn: boolean;
   windowMs?: number;
   checkMs?: number;
   heartbeatFile?: string;
@@ -37,13 +39,14 @@ interface Args {
 }
 
 function parseArgs(argv: string[]): Args {
-  const a: Args = { once: false, dryRun: false, ignoreSchedule: false };
+  const a: Args = { once: false, dryRun: false, ignoreSchedule: false, assumeDetectionOn: false };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
     const v = () => { const x = argv[++i]; if (x === undefined) throw new Error(`${k} needs a value`); return x; };
     if (k === "--once") a.once = true;
     else if (k === "--dry-run") a.dryRun = true;
     else if (k === "--ignore-schedule") a.ignoreSchedule = true;
+    else if (k === "--assume-detection-on") a.assumeDetectionOn = true;
     else if (k === "--window-ms") a.windowMs = Number(v());
     else if (k === "--check-ms") a.checkMs = Number(v());
     else if (k === "--heartbeat-file") a.heartbeatFile = v();
@@ -174,6 +177,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   };
   validateSupervisor(cfg);
   const schedule = loadConfig().schedule;
+  // Read once at start, like the schedule above. With detection off there is no
+  // websocket, so the dead-socket rule must not fire - see decideSupervisor.
+  const watcherEnabled = args.assumeDetectionOn || loadConfig().watcher?.enabled !== false;
   const stateFile = args.stateFile ?? path.join(path.dirname(cfg.logFile), "supervisor-state.json");
 
   if (!cfg.enabled && !args.once) {
@@ -204,7 +210,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     const hbPidAlive = heartbeat ? pidAlive(heartbeat.pid) : null;
     const botAlive: boolean | null = namedPids.length > 0 ? true : hbPidAlive === true ? true : hbPidAlive === false ? false : namedPids.length === 0 ? false : null;
     const decision = decideSupervisor({
-      nowMs, heartbeat, botAlive, lastRestartAtMs, supervisorStartedAtMs: startedAtMs, lastReadableAtMs,
+      nowMs, heartbeat, botAlive, lastRestartAtMs, supervisorStartedAtMs: startedAtMs, lastReadableAtMs, watcherEnabled,
       schedule, ignoreSchedule: args.ignoreSchedule, config: cfg,
     });
 

@@ -222,7 +222,7 @@ console.log("\nSupervisor process (--once --dry-run)");
 function runOnce(hbFile: string, extra: string[] = []) {
   const logFile = path.join(tmp, `sup-${Math.random().toString(36).slice(2)}.jsonl`);
   const stateFile = logFile.replace(".jsonl", "-state.json");
-  const out = execFileSync("npx", ["ts-node", "--transpile-only", "src/supervisor/run.ts", "--once", "--dry-run", "--ignore-schedule", "--heartbeat-file", hbFile, "--log-file", logFile, "--state-file", stateFile, ...extra], {
+  const out = execFileSync("npx", ["ts-node", "--transpile-only", "src/supervisor/run.ts", "--once", "--dry-run", "--ignore-schedule", "--assume-detection-on", "--heartbeat-file", hbFile, "--log-file", logFile, "--state-file", stateFile, ...extra], {
     encoding: "utf8", cwd: process.cwd(), env: { ...process.env, RPC_URL: "http://127.0.0.1:1" }, stdio: ["ignore", "pipe", "pipe"],
   });
   return { out: JSON.parse(out), log: fs.readFileSync(logFile, "utf8").trim().split("\n").map((l) => JSON.parse(l)), state: JSON.parse(fs.readFileSync(stateFile, "utf8")) };
@@ -264,6 +264,38 @@ function processChecks() {
 (async () => {
   await watcherEmits();
   processChecks();
+  // --- detection off (APPROVALS 52) -------------------------------------
+  //
+  // With watcher.enabled=false the bot opens no websocket, so lastWsMessageAt
+  // is null for ever and silentForMs only grows. Without the guard the
+  // dead-socket rule restarts a perfectly healthy bot every wsSilenceWindowMs,
+  // for ever. What must NOT be lost is the protection that actually matters:
+  // a frozen or missing heartbeat still means the bot has stopped.
+  {
+    const neverAnyWs = { updatedAgoMs: 3_000, wsAgoMs: null, startedAgoMs: 60 * MIN };
+
+    const on = decide({ heartbeat: hbAt(neverAnyWs) });
+    check("DETECTION ON: no ws since start an hour ago -> restart (the socket never came up)", on.action === "restart", on.reason);
+
+    const off = decide({ heartbeat: hbAt(neverAnyWs), watcherEnabled: false });
+    check("DETECTION OFF: the same state is ok - there is no socket to be silent", off.action === "ok", off.reason);
+    check("  ...and the reason says detection is off, not that the socket is fine", /detection is OFF/.test(off.reason), off.reason);
+    check("  ...silentForMs is null, not a number that would look like an outage", off.silentForMs === null, String(off.silentForMs));
+
+    // The two rules that must survive.
+    const frozen = decide({ heartbeat: hbAt({ updatedAgoMs: 6 * MIN, wsAgoMs: null }), watcherEnabled: false });
+    check("DETECTION OFF: a frozen heartbeat STILL restarts", frozen.action === "restart", frozen.reason);
+    const gone = decide({ heartbeat: null, watcherEnabled: false });
+    check("DETECTION OFF: a missing heartbeat STILL restarts", gone.action === "restart", gone.reason);
+
+    // Absent must mean ON, so an older caller that does not pass the flag keeps
+    // the original behaviour rather than silently losing the dead-socket rule.
+    const absent = decide({ heartbeat: hbAt(neverAnyWs) });
+    check("the flag absent behaves exactly as watcherEnabled: true", absent.action === "restart");
+    const explicitlyOn = decide({ heartbeat: hbAt(neverAnyWs), watcherEnabled: true });
+    check("explicitly true behaves the same", explicitlyOn.action === "restart");
+  }
+
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(`\nTotal: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

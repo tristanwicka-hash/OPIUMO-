@@ -80,6 +80,17 @@ export interface SupervisorInput {
    * reference it had was its own start 3.5 minutes earlier.
    */
   lastReadableAtMs?: number | null;
+  /**
+   * Whether the bot is running its detection loop (config watcher.enabled).
+   *
+   * When detection is OFF there is no websocket at all, so `lastWsMessageAt`
+   * stays null forever and the dead-socket rule below would fire every
+   * wsSilenceWindowMs, restarting a perfectly healthy bot for ever. The rule is
+   * about a socket that DIED; a socket that was never opened is not a fault.
+   *
+   * Defaults to true so an older caller keeps the original behaviour.
+   */
+  watcherEnabled?: boolean;
   schedule: ScheduleConfig;
   ignoreSchedule?: boolean;
   config: Pick<SupervisorConfig, "wsSilenceWindowMs" | "startupGraceMs" | "heartbeatWriteIntervalMs">;
@@ -150,6 +161,21 @@ export function decideSupervisor(input: SupervisorInput): SupervisorDecision {
 
   const lastWs = heartbeat.lastWsMessageAt !== null ? Date.parse(heartbeat.lastWsMessageAt) : Date.parse(heartbeat.startedAt);
   const silentForMs = nowMs - lastWs;
+
+  // Detection off (APPROVALS 52): there is no socket to be silent. The frozen-
+  // and-missing-heartbeat rules above still apply and are the ones that matter -
+  // they catch a bot that has actually stopped. Only the dead-socket rule is
+  // skipped, because with watcher.enabled=false it would restart a healthy bot
+  // every 5 minutes for ever.
+  if (input.watcherEnabled === false) {
+    return {
+      action: "ok",
+      reason: `detection is OFF (watcher.enabled=false), so there is no websocket to watch; heartbeat is ${Math.round(heartbeatAgeMs / 1000)}s old and the bot is writing`,
+      silentForMs: null,
+      heartbeatAgeMs,
+    };
+  }
+
   if (silentForMs >= window) {
     return {
       action: "restart",
