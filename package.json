@@ -99,7 +99,8 @@
     "check:stream-billing": "ts-node scripts/stream-billing-check.ts",
     "test:stream-billing": "ts-node tests/test-stream-billing.ts",
     "cost:depth": "ts-node scripts/depth-calibration.ts",
-    "test:depth-calibration": "ts-node tests/test-depth-calibration.ts"
+    "test:depth-calibration": "ts-node tests/test-depth-calibration.ts",
+    "test:insider": "ts-node tests/test-insider-fingerprint.ts"
   },
   "dependencies": {
     "@drift-labs/sdk": "^2.156.0",
